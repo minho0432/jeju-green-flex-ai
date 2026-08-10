@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from optimizer import make_plan
+from optimizer import derive_point_policy, make_plan
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -56,6 +56,10 @@ def validate() -> None:
     if score_weights.get("renewable") != 0.8 or score_weights.get("market_smp") != 0.2:
         raise ValueError("Green Score 가중치는 재생에너지 80%, SMP 20%여야 합니다.")
 
+    point_policy = derive_point_policy(3_000_000, 100_000)
+    if point_policy["maximum_total_rate"] != 30:
+        raise ValueError("월 예산 기반 최대 포인트 단가가 30P/kWh가 아닙니다.")
+
     plan = make_plan(
         forecast=forecast,
         current_soc=30,
@@ -66,9 +70,10 @@ def validate() -> None:
         start_hour=8,
         departure_hour=20,
         retail_price=320,
-        base_point_rate=10,
-        bonus_point_rate=20,
-        reward_threshold=70,
+        base_point_rate=point_policy["base_point_rate"],
+        bonus_point_rate=point_policy["maximum_bonus_rate"],
+        partial_reward_threshold=50,
+        full_reward_threshold=70,
         session_point_cap=1500,
         continuous=True,
         conservative=True,
