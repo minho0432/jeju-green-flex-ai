@@ -11,7 +11,11 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-from optimizer import make_plan  # noqa: E402
+from optimizer import (  # noqa: E402
+    bonus_rate_for_score,
+    derive_point_policy,
+    make_plan,
+)
 
 
 def sample_forecast() -> pd.DataFrame:
@@ -43,7 +47,8 @@ class OptimizerTests(unittest.TestCase):
             "retail_price": 320,
             "base_point_rate": 10,
             "bonus_point_rate": 20,
-            "reward_threshold": 70,
+            "partial_reward_threshold": 50,
+            "full_reward_threshold": 70,
             "session_point_cap": 1500,
             "continuous": True,
             "conservative": True,
@@ -90,6 +95,19 @@ class OptimizerTests(unittest.TestCase):
         )
         self.assertLessEqual(plan["ai"]["expected_total_points"], 500)
         self.assertLessEqual(plan["ai"]["settled_total_points"], 500)
+
+    def test_budget_derives_point_rates(self):
+        policy = derive_point_policy(3_000_000, 100_000)
+        self.assertEqual(policy["maximum_total_rate"], 30)
+        self.assertEqual(policy["base_point_rate"], 10)
+        self.assertEqual(policy["partial_bonus_rate"], 10)
+        self.assertEqual(policy["maximum_bonus_rate"], 20)
+
+    def test_three_tier_bonus_rate(self):
+        self.assertEqual(bonus_rate_for_score(49.9, 20), 0)
+        self.assertEqual(bonus_rate_for_score(50, 20), 10)
+        self.assertEqual(bonus_rate_for_score(69.9, 20), 10)
+        self.assertEqual(bonus_rate_for_score(70, 20), 20)
 
     def test_impossible_schedule_is_reported(self):
         plan = self.make_default_plan(
