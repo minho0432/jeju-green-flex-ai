@@ -4,22 +4,20 @@ cd /d "%~dp0"
 
 if not exist ".venv\Scripts\python.exe" goto no_venv
 
-echo [1/3] 제주 시간별 SMP를 가져옵니다.
-".venv\Scripts\python.exe" scripts\download_smp.py
-if errorlevel 1 goto error
-
-echo [2/3] 발전량, SMP, 날씨를 하나로 합칩니다.
-".venv\Scripts\python.exe" scripts\prepare_data.py
-if errorlevel 1 goto error
-
-echo [3/3] 데이터 오류를 검사합니다.
+echo [1/4] 데이터를 검사합니다.
 ".venv\Scripts\python.exe" scripts\validate_data.py
 if errorlevel 1 goto error
 
-echo.
-echo 완료되었습니다.
-echo AI 담당자에게 data\processed\train.csv 파일을 전달하세요.
-pause
+echo [2/4] AI 모델을 학습하고 5회 검증합니다.
+".venv\Scripts\python.exe" scripts\train_models.py
+if errorlevel 1 goto error
+
+echo [3/4] AI 결과와 충전계획을 검사합니다.
+".venv\Scripts\python.exe" scripts\validate_ai.py
+if errorlevel 1 goto error
+
+echo [4/4] 데모 화면을 실행합니다.
+".venv\Scripts\python.exe" -m streamlit run app.py
 exit /b 0
 
 :no_venv
@@ -29,6 +27,6 @@ exit /b 1
 
 :error
 echo.
-echo 실행 중 문제가 발생했습니다. 이 화면을 캡처해 전달해 주세요.
+echo 실행 중 문제가 발생했습니다. 위 오류가 모두 보이게 캡처해 주세요.
 pause
 exit /b 1
