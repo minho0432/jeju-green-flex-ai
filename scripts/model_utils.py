@@ -13,6 +13,10 @@ WEATHER_COLUMNS = [
     "shortwave_radiation",
 ]
 
+# 팀 제품정의: 친환경 기회를 핵심으로 두고 SMP는 보조 신호로만 사용한다.
+RENEWABLE_WEIGHT = 0.80
+MARKET_WEIGHT = 0.20
+
 LAG_COLUMNS = [
     "smp_lag_24h",
     "smp_lag_168h",
@@ -32,6 +36,19 @@ FEATURE_COLUMNS = [
     "day_cos",
     *WEATHER_COLUMNS,
     *LAG_COLUMNS,
+]
+
+LIVE_FEATURE_COLUMNS = [
+    "hour",
+    "day_of_week",
+    "month",
+    "day_of_year",
+    "is_weekend",
+    "hour_sin",
+    "hour_cos",
+    "day_sin",
+    "day_cos",
+    *WEATHER_COLUMNS,
 ]
 
 
@@ -63,6 +80,24 @@ def make_features(df: pd.DataFrame) -> pd.DataFrame:
     for column in LAG_COLUMNS:
         features[column] = pd.to_numeric(df[column], errors="coerce")
     return features[FEATURE_COLUMNS]
+
+
+def make_live_features(df: pd.DataFrame) -> pd.DataFrame:
+    """오늘 예보 모드에서 미리 알 수 있는 시간·날씨 정보만 숫자로 바꾼다."""
+    timestamp = pd.to_datetime(df["timestamp"])
+    features = pd.DataFrame(index=df.index)
+    features["hour"] = timestamp.dt.hour
+    features["day_of_week"] = timestamp.dt.dayofweek
+    features["month"] = timestamp.dt.month
+    features["day_of_year"] = timestamp.dt.dayofyear
+    features["is_weekend"] = (timestamp.dt.dayofweek >= 5).astype(int)
+    features["hour_sin"] = np.sin(2 * np.pi * timestamp.dt.hour / 24)
+    features["hour_cos"] = np.cos(2 * np.pi * timestamp.dt.hour / 24)
+    features["day_sin"] = np.sin(2 * np.pi * timestamp.dt.dayofyear / 365.25)
+    features["day_cos"] = np.cos(2 * np.pi * timestamp.dt.dayofyear / 365.25)
+    for column in WEATHER_COLUMNS:
+        features[column] = pd.to_numeric(df[column], errors="coerce")
+    return features[LIVE_FEATURE_COLUMNS]
 
 
 def percentile_score(series: pd.Series, higher_is_better: bool) -> pd.Series:
