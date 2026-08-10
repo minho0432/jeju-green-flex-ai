@@ -31,3 +31,17 @@ jobs:
 
       - name: Run optimizer unit tests
         run: python -m unittest discover -s tests -v
+
+      - name: Smoke test Streamlit app
+        run: |
+          python -m streamlit run app.py --server.headless true --server.port 8501 > streamlit.log 2>&1 &
+          APP_PID=$!
+          trap 'kill "$APP_PID" 2>/dev/null || true' EXIT
+          for attempt in {1..20}; do
+            if curl --fail --silent http://localhost:8501/_stcore/health; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat streamlit.log
+          exit 1
