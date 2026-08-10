@@ -1,0 +1,36 @@
+{
+  "train_rows": 7008,
+  "test_rows": 1752,
+  "train_end": "2025-10-19 23:00:00",
+  "test_start": "2025-10-20 00:00:00",
+  "test_end": "2025-12-31 23:00:00",
+  "note": "마지막 20% 기간을 학습에서 제외한 시간순 검증 결과",
+  "targets": {
+    "smp": {
+      "ai": {
+        "mae": 15.7715,
+        "rmse": 20.8351,
+        "r2": 0.0737
+      },
+      "baseline": {
+        "mae": 26.2051,
+        "rmse": 32.3989,
+        "r2": -1.24
+      },
+      "mae_improvement_percent": 39.82
+    },
+    "renewable_mwh": {
+      "ai": {
+        "mae": 11.3968,
+        "rmse": 19.4556,
+        "r2": 0.9088
+      },
+      "baseline": {
+        "mae": 39.0632,
+        "rmse": 61.1666,
+        "r2": 0.0983
+      },
+      "mae_improvement_percent": 70.82
+    }
+  }
+}
