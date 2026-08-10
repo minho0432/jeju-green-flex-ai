@@ -15,11 +15,15 @@ from sklearn.model_selection import TimeSeriesSplit
 from model_utils import (
     FEATURE_COLUMNS,
     LAG_COLUMNS,
+    MARKET_WEIGHT,
+    RENEWABLE_WEIGHT,
     WEATHER_COLUMNS,
     add_lag_features,
     make_features,
+    make_live_features,
     score_against_history,
 )
+from live_forecast import build_forecast_only_model
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -119,6 +123,7 @@ def train() -> tuple[pd.DataFrame, dict]:
         raise ValueError("학습 데이터에 빈칸이 있습니다. validate_data.py를 먼저 실행하세요.")
 
     features = make_features(frame)
+    live_features = make_live_features(frame)
     test_size = 24 * TEST_DAYS_PER_SPLIT
     splitter = TimeSeriesSplit(n_splits=N_SPLITS, test_size=test_size)
     backtest_parts: list[pd.DataFrame] = []
@@ -137,6 +142,16 @@ def train() -> tuple[pd.DataFrame, dict]:
                 model, features.iloc[test_index], test_frame, target
             )
             fold_result[output_column] = prediction
+            forecast_only_model = build_forecast_only_model(target)
+            forecast_only_model.fit(
+                live_features.iloc[train_index], train_frame[target]
+            )
+            forecast_only_prediction = forecast_only_model.predict(
+                live_features.iloc[test_index]
+            )
+            if target == "renewable_mwh":
+                forecast_only_prediction = np.maximum(forecast_only_prediction, 0)
+            fold_result[f"forecast_only_{output_column}"] = forecast_only_prediction
             for name, values in baseline_columns(test_frame, target).items():
                 fold_result[f"{target}_baseline_{name}"] = values.to_numpy()
 
@@ -162,7 +177,13 @@ def train() -> tuple[pd.DataFrame, dict]:
             "folds": fold_boundaries,
         },
         "note": "24시간 전·168시간 전 값만 사용하며 미래값은 입력하지 않음",
+        "score_weights": {
+            "renewable": RENEWABLE_WEIGHT,
+            "market_smp": MARKET_WEIGHT,
+            "note": "재생에너지는 핵심 신호, SMP는 소비자 요금이 아닌 보조 시장지표",
+        },
         "targets": {},
+        "forecast_only_targets": {},
     }
 
     last_fold_number = int(backtest["fold"].max())
@@ -202,6 +223,32 @@ def train() -> tuple[pd.DataFrame, dict]:
         target_metrics["approx_90_interval_half_width"] = round(interval_half_width, 4)
         target_metrics["last_fold_interval_coverage"] = round(coverage, 4)
         metrics["targets"][target] = target_metrics
+
+        # 오늘 예보 실험 모드는 미래에 알 수 있는 시간·날씨만 사용한다.
+        live_output_column = f"forecast_only_{output_column}"
+        live_metrics: dict[str, object] = {
+            "ai": metric_dict(backtest[target], backtest[live_output_column]),
+            "note": "과거 관측날씨 기준 검증이며 실제 기상예보 오차는 포함하지 않음",
+        }
+        live_calibration_error = np.abs(
+            calibration[target] - calibration[live_output_column]
+        )
+        live_interval_half_width = float(
+            np.quantile(live_calibration_error, 0.90)
+        )
+        live_last_lower = last_fold[live_output_column] - live_interval_half_width
+        live_last_upper = last_fold[live_output_column] + live_interval_half_width
+        live_coverage = float(
+            (
+                (last_fold[target] >= live_last_lower)
+                & (last_fold[target] <= live_last_upper)
+            ).mean()
+        )
+        live_metrics["approx_90_interval_half_width"] = round(
+            live_interval_half_width, 4
+        )
+        live_metrics["last_fold_interval_coverage"] = round(live_coverage, 4)
+        metrics["forecast_only_targets"][target] = live_metrics
 
     # 2025-12-10은 마지막 시험 구간에 속하므로 모델이 해당 정답을 학습하지 않았다.
     demo_date = pd.Timestamp("2025-12-10").date()
@@ -249,8 +296,8 @@ def train() -> tuple[pd.DataFrame, dict]:
         higher_is_better=True,
     ).round(1)
     result["green_score"] = (
-        0.45 * result["price_opportunity_score"]
-        + 0.55 * result["renewable_opportunity_score"]
+        MARKET_WEIGHT * result["price_opportunity_score"]
+        + RENEWABLE_WEIGHT * result["renewable_opportunity_score"]
     ).round(1)
 
     # 예보가 틀려도 무리한 추천을 하지 않도록 불리한 경우를 기준으로 한 보수적 점수.
@@ -266,8 +313,8 @@ def train() -> tuple[pd.DataFrame, dict]:
         higher_is_better=True,
     ).round(1)
     result["planning_score"] = (
-        0.45 * result["conservative_price_score"]
-        + 0.55 * result["conservative_renewable_score"]
+        MARKET_WEIGHT * result["conservative_price_score"]
+        + RENEWABLE_WEIGHT * result["conservative_renewable_score"]
     ).round(1)
     result["forecast_risk_points"] = (
         result["green_score"] - result["planning_score"]
@@ -284,8 +331,8 @@ def train() -> tuple[pd.DataFrame, dict]:
         higher_is_better=True,
     ).round(1)
     result["actual_green_score"] = (
-        0.45 * result["actual_price_score"]
-        + 0.55 * result["actual_renewable_score"]
+        MARKET_WEIGHT * result["actual_price_score"]
+        + RENEWABLE_WEIGHT * result["actual_renewable_score"]
     ).round(1)
 
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
