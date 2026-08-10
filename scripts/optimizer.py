@@ -7,6 +7,57 @@ import math
 import pandas as pd
 
 
+POINT_VALUE_WON = 1.0
+
+
+def derive_point_policy(
+    monthly_budget_won: float,
+    target_shifted_kwh: float,
+    point_value_won: float = POINT_VALUE_WON,
+    base_share: float = 1 / 3,
+) -> dict[str, float]:
+    """월 예산과 목표 충전량으로 지속 가능한 P/kWh 단가를 계산한다.
+
+    예: 300만원 ÷ 10만kWh ÷ 1원/P = 최대 30P/kWh.
+    그중 1/3은 추천 참여 보장, 2/3은 실제 성과 보너스로 배분한다.
+    """
+    if monthly_budget_won <= 0 or target_shifted_kwh <= 0:
+        raise ValueError("월 캠페인 예산과 목표 이동 충전량은 0보다 커야 합니다.")
+    if point_value_won <= 0:
+        raise ValueError("포인트의 원화 가치는 0보다 커야 합니다.")
+    if not 0 < base_share < 1:
+        raise ValueError("참여 보장 비중은 0과 1 사이여야 합니다.")
+
+    maximum_total_rate = monthly_budget_won / target_shifted_kwh / point_value_won
+    base_point_rate = maximum_total_rate * base_share
+    maximum_bonus_rate = maximum_total_rate - base_point_rate
+    return {
+        "monthly_budget_won": float(monthly_budget_won),
+        "target_shifted_kwh": float(target_shifted_kwh),
+        "point_value_won": float(point_value_won),
+        "maximum_total_rate": float(maximum_total_rate),
+        "base_point_rate": float(base_point_rate),
+        "partial_bonus_rate": float(maximum_bonus_rate / 2),
+        "maximum_bonus_rate": float(maximum_bonus_rate),
+    }
+
+
+def bonus_rate_for_score(
+    score: float,
+    maximum_bonus_rate: float,
+    partial_threshold: float = 50,
+    full_threshold: float = 70,
+) -> float:
+    """실제 성과점수에 따라 0·절반·최대 보너스 단가를 돌려준다."""
+    if partial_threshold >= full_threshold:
+        raise ValueError("부분 보너스 기준은 최대 보너스 기준보다 낮아야 합니다.")
+    if score >= full_threshold:
+        return float(maximum_bonus_rate)
+    if score >= partial_threshold:
+        return float(maximum_bonus_rate / 2)
+    return 0.0
+
+
 def _allocate(sorted_slots: pd.DataFrame, required_grid_kwh: float, charger_kw: float):
     """정렬된 시간칸에 필요한 충전량을 앞에서부터 배분한다."""
     schedule = sorted_slots.copy()
@@ -26,7 +77,8 @@ def _summarize(
     retail_price: float,
     base_point_rate: float,
     bonus_point_rate: float,
-    reward_threshold: float,
+    partial_reward_threshold: float,
+    full_reward_threshold: float,
     session_point_cap: float,
 ) -> dict[str, float | str]:
     """비용과 Green Point를 예측 단계와 사후 정산 단계로 분리한다."""
@@ -56,22 +108,31 @@ def _summarize(
     # 추천시간을 실제로 따른 대가. 예보가 틀려도 회수하지 않는다는 정책 가정이다.
     guaranteed_points = min(energy * base_point_rate, session_point_cap)
     remaining_point_cap = max(session_point_cap - guaranteed_points, 0)
-    expected_eligible = float(
-        used.loc[used["green_score"] >= reward_threshold, "scheduled_kwh"].sum()
+    expected_bonus_rates = used["green_score"].apply(
+        lambda score: bonus_rate_for_score(
+            score,
+            bonus_point_rate,
+            partial_reward_threshold,
+            full_reward_threshold,
+        )
     )
     expected_bonus_points = min(
-        expected_eligible * bonus_point_rate, remaining_point_cap
+        float((used["scheduled_kwh"] * expected_bonus_rates).sum()),
+        remaining_point_cap,
     )
 
     if "actual_green_score" in used.columns:
-        settled_eligible = float(
-            used.loc[
-                used["actual_green_score"] >= reward_threshold,
-                "scheduled_kwh",
-            ].sum()
+        settled_bonus_rates = used["actual_green_score"].apply(
+            lambda score: bonus_rate_for_score(
+                score,
+                bonus_point_rate,
+                partial_reward_threshold,
+                full_reward_threshold,
+            )
         )
         settled_bonus_points = min(
-            settled_eligible * bonus_point_rate, remaining_point_cap
+            float((used["scheduled_kwh"] * settled_bonus_rates).sum()),
+            remaining_point_cap,
         )
         settlement_status = "historical_replay_settled"
     else:
@@ -153,7 +214,8 @@ def make_plan(
     retail_price: float,
     base_point_rate: float = 10,
     bonus_point_rate: float = 20,
-    reward_threshold: float = 70,
+    partial_reward_threshold: float = 50,
+    full_reward_threshold: float = 70,
     session_point_cap: float = 1500,
     continuous: bool = True,
     conservative: bool = True,
@@ -173,6 +235,8 @@ def make_plan(
         raise ValueError("배터리 용량과 충전기 출력은 0보다 커야 합니다.")
     if min(retail_price, base_point_rate, bonus_point_rate, session_point_cap) < 0:
         raise ValueError("요금·포인트 단가·포인트 한도는 음수가 될 수 없습니다.")
+    if partial_reward_threshold >= full_reward_threshold:
+        raise ValueError("부분 보너스 기준은 최대 보너스 기준보다 낮아야 합니다.")
 
     data = forecast.copy()
     data["timestamp"] = pd.to_datetime(data["timestamp"])
@@ -220,7 +284,8 @@ def make_plan(
         retail_price,
         base_point_rate,
         bonus_point_rate,
-        reward_threshold,
+        partial_reward_threshold,
+        full_reward_threshold,
         session_point_cap,
     )
     baseline_summary = _summarize(
@@ -228,7 +293,8 @@ def make_plan(
         retail_price,
         0,
         0,
-        reward_threshold,
+        partial_reward_threshold,
+        full_reward_threshold,
         0,
     )
     reached_soc = current_soc + energy_to_schedule * efficiency / battery_kwh * 100
