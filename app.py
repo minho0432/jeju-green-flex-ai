@@ -18,7 +18,11 @@ from live_forecast import (  # noqa: E402
     fetch_open_meteo_forecast,
     train_forecast_only_models,
 )
-from optimizer import make_plan  # noqa: E402
+from optimizer import (  # noqa: E402
+    bonus_rate_for_score,
+    derive_point_policy,
+    make_plan,
+)
 
 
 FORECAST_PATH = ROOT / "outputs" / "demo_predictions.csv"
@@ -83,12 +87,26 @@ with st.sidebar:
     continuous = st.checkbox("충전시간을 연속으로 추천", value=True)
     conservative = st.checkbox("예측 오차까지 고려해 보수적으로 추천", value=True)
 
-    st.header("2. Green Point 정책")
+    st.header("2. Green 충전 크레딧")
     retail_price = st.number_input("사용자 충전 단가 가정(원/kWh)", 0.0, 1000.0, 320.0, 10.0)
-    base_point_rate = st.number_input("참여 보장 포인트(P/kWh)", 0.0, 200.0, 10.0, 5.0)
-    bonus_point_rate = st.number_input("성과 추가 포인트(P/kWh)", 0.0, 200.0, 20.0, 5.0)
-    reward_threshold = st.slider("성과 포인트 지급 기준 점수", 0, 100, 70, 5)
-    session_point_cap = st.number_input("한 번 충전 포인트 상한(P)", 0.0, 10000.0, 1500.0, 100.0)
+    st.caption("1P를 다음 충전에서 1원처럼 쓰는 정책 시뮬레이션입니다.")
+    with st.expander("운영자 캠페인 예산 가정", expanded=True):
+        monthly_budget_won = st.number_input(
+            "월 캠페인 예산(원)", 100000.0, 100000000.0, 3000000.0, 100000.0
+        )
+        target_shifted_kwh = st.number_input(
+            "월 목표 Green Time 충전량(kWh)", 1000.0, 1000000.0, 100000.0, 1000.0
+        )
+        session_point_cap = st.number_input(
+            "한 번 충전 크레딧 상한(P)", 100.0, 10000.0, 1500.0, 100.0
+        )
+
+point_policy = derive_point_policy(monthly_budget_won, target_shifted_kwh)
+base_point_rate = point_policy["base_point_rate"]
+partial_bonus_rate = point_policy["partial_bonus_rate"]
+bonus_point_rate = point_policy["maximum_bonus_rate"]
+partial_reward_threshold = 50
+full_reward_threshold = 70
 
 try:
     plan = make_plan(
@@ -103,7 +121,8 @@ try:
         retail_price=retail_price,
         base_point_rate=base_point_rate,
         bonus_point_rate=bonus_point_rate,
-        reward_threshold=reward_threshold,
+        partial_reward_threshold=partial_reward_threshold,
+        full_reward_threshold=full_reward_threshold,
         session_point_cap=session_point_cap,
         continuous=continuous,
         conservative=conservative,
@@ -141,7 +160,7 @@ display_points = (
     if has_actual
     else plan["ai"]["expected_total_points"]
 )
-point_label = "재현 정산 Green Point" if has_actual else "예상 Green Point"
+point_label = "재현 정산 충전 크레딧" if has_actual else "예상 충전 크레딧"
 
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("필요한 전력", f"{plan['required_grid_kwh']:.1f} kWh")
@@ -304,23 +323,35 @@ table["중심 점수"] = table["green_score"].round(1)
 table["보수적 점수"] = table.get("planning_score", table["green_score"]).round(1)
 table["충전량(kWh)"] = table["scheduled_kwh"].round(2)
 table["보장 P"] = (table["scheduled_kwh"] * base_point_rate).round(0)
+table["예상 보너스 단가"] = table["green_score"].apply(
+    lambda score: bonus_rate_for_score(
+        score,
+        bonus_point_rate,
+        partial_reward_threshold,
+        full_reward_threshold,
+    )
+)
 table["예상 보너스 P"] = (
-    (table["green_score"] >= reward_threshold)
-    * table["scheduled_kwh"]
-    * bonus_point_rate
+    table["scheduled_kwh"] * table["예상 보너스 단가"]
 ).round(0)
 columns = [
     "시간", "예측 SMP", "예측 재생에너지", "중심 점수", "보수적 점수",
-    "충전량(kWh)", "보장 P", "예상 보너스 P",
+    "충전량(kWh)", "보장 P", "예상 보너스 단가", "예상 보너스 P",
 ]
 if has_actual:
     table["실제 점수"] = table["actual_green_score"].round(1)
+    table["정산 보너스 단가"] = table["actual_green_score"].apply(
+        lambda score: bonus_rate_for_score(
+            score,
+            bonus_point_rate,
+            partial_reward_threshold,
+            full_reward_threshold,
+        )
+    )
     table["정산 보너스 P"] = (
-        (table["actual_green_score"] >= reward_threshold)
-        * table["scheduled_kwh"]
-        * bonus_point_rate
+        table["scheduled_kwh"] * table["정산 보너스 단가"]
     ).round(0)
-    columns.extend(["실제 점수", "정산 보너스 P"])
+    columns.extend(["실제 점수", "정산 보너스 단가", "정산 보너스 P"])
 st.dataframe(table[columns], hide_index=True, use_container_width=True)
 st.caption(f"총 지급 포인트는 한 번 충전당 최대 {session_point_cap:,.0f}P로 제한합니다.")
 
@@ -335,16 +366,20 @@ with st.expander("SMP와 가격절약은 어떻게 연결되나요?"):
         """
     )
 
-with st.expander("Green Point는 누가 주나요?"):
+with st.expander("Green 충전 크레딧은 어떻게 정했나요?"):
     st.markdown(
         f"""
-        현재 포인트는 **충전사업자·렌터카사·지자체·후원기업 중 한 곳이 캠페인 예산을 제공한다고 가정한 시뮬레이션**입니다.
+        현재 크레딧은 **충전사업자·지자체·후원기업 중 한 곳이 월 {monthly_budget_won:,.0f}원의 캠페인 예산을 제공한다고 가정한 시뮬레이션**입니다.
 
-        - 참여 보장: 추천시간을 따른 충전량 × {base_point_rate:,.0f}P/kWh
-        - 성과 보너스: 실제 Green Score가 {reward_threshold}점 이상인 충전량 × {bonus_point_rate:,.0f}P/kWh
+        - 최대 단가 근거: {monthly_budget_won:,.0f}원 ÷ {target_shifted_kwh:,.0f}kWh = {point_policy['maximum_total_rate']:,.1f}P/kWh
+        - 참여 보장: 추천시간과 겹친 충전량 × {base_point_rate:,.1f}P/kWh
+        - 50점 미만: 성과 보너스 0P/kWh
+        - 50~69점: 성과 보너스 {partial_bonus_rate:,.1f}P/kWh
+        - 70점 이상: 성과 보너스 {bonus_point_rate:,.1f}P/kWh
         - 세션 상한: {session_point_cap:,.0f}P
 
-        실제 서비스에는 충전 세션 ID, 실제 충전량, 결제기록, 중복지급 방지 원장과 예산 제공자 계약이 필요합니다.
+        1P는 다음 충전에서 1원처럼 사용하는 충전 크레딧으로 정의합니다. 실제 서비스에는 충전 세션 ID,
+        실제 충전량, 결제기록, 중복지급 방지 원장과 예산 제공자 계약이 필요합니다.
         """
     )
 
