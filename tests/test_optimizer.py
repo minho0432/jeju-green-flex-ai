@@ -1,4 +1,4 @@
-"""충전 최적화와 리워드 정책의 핵심 규칙을 검사한다."""
+"""충전 최적화와 Green Point 정책의 핵심 규칙을 검사한다."""
 
 from __future__ import annotations
 
@@ -41,9 +41,10 @@ class OptimizerTests(unittest.TestCase):
             "start_hour": 8,
             "departure_hour": 20,
             "retail_price": 320,
-            "base_reward_rate": 10,
-            "bonus_reward_rate": 20,
+            "base_point_rate": 10,
+            "bonus_point_rate": 20,
             "reward_threshold": 70,
+            "session_point_cap": 1500,
             "continuous": True,
             "conservative": True,
         }
@@ -61,15 +62,15 @@ class OptimizerTests(unittest.TestCase):
         differences = used["timestamp"].sort_values().diff().dropna()
         self.assertTrue((differences == pd.Timedelta(hours=1)).all())
 
-    def test_guaranteed_reward_survives_forecast_miss(self):
+    def test_guaranteed_points_survive_forecast_miss(self):
         forecast = sample_forecast()
         forecast["actual_green_score"] = 0
         plan = self.make_default_plan(forecast=forecast)
-        self.assertGreater(plan["ai"]["guaranteed_reward_won"], 0)
-        self.assertEqual(plan["ai"]["settled_bonus_won"], 0)
+        self.assertGreater(plan["ai"]["guaranteed_points"], 0)
+        self.assertEqual(plan["ai"]["settled_bonus_points"], 0)
         self.assertEqual(
-            plan["ai"]["settled_reward_won"],
-            plan["ai"]["guaranteed_reward_won"],
+            plan["ai"]["settled_total_points"],
+            plan["ai"]["guaranteed_points"],
         )
 
     def test_future_without_actual_data_is_pending(self):
@@ -77,9 +78,18 @@ class OptimizerTests(unittest.TestCase):
         plan = self.make_default_plan(forecast=forecast)
         self.assertEqual(plan["ai"]["settlement_status"], "pending_actual_data")
         self.assertGreaterEqual(
-            plan["ai"]["expected_reward_won"],
-            plan["ai"]["guaranteed_reward_won"],
+            plan["ai"]["expected_total_points"],
+            plan["ai"]["guaranteed_points"],
         )
+
+    def test_session_point_cap_is_enforced(self):
+        plan = self.make_default_plan(
+            base_point_rate=100,
+            bonus_point_rate=200,
+            session_point_cap=500,
+        )
+        self.assertLessEqual(plan["ai"]["expected_total_points"], 500)
+        self.assertLessEqual(plan["ai"]["settled_total_points"], 500)
 
     def test_impossible_schedule_is_reported(self):
         plan = self.make_default_plan(
