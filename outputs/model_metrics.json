@@ -48,6 +48,11 @@
     ]
   },
   "note": "24시간 전·168시간 전 값만 사용하며 미래값은 입력하지 않음",
+  "score_weights": {
+    "renewable": 0.8,
+    "market_smp": 0.2,
+    "note": "재생에너지는 핵심 신호, SMP는 소비자 요금이 아닌 보조 시장지표"
+  },
   "targets": {
     "smp": {
       "ai": {
@@ -104,6 +109,28 @@
       "mae_improvement_percent": 30.66,
       "approx_90_interval_half_width": 33.2492,
       "last_fold_interval_coverage": 0.9361
+    }
+  },
+  "forecast_only_targets": {
+    "smp": {
+      "ai": {
+        "mae": 14.1874,
+        "rmse": 18.8169,
+        "r2": 0.3944
+      },
+      "note": "과거 관측날씨 기준 검증이며 실제 기상예보 오차는 포함하지 않음",
+      "approx_90_interval_half_width": 31.3539,
+      "last_fold_interval_coverage": 0.9431
+    },
+    "renewable_mwh": {
+      "ai": {
+        "mae": 11.9452,
+        "rmse": 21.1573,
+        "r2": 0.9016
+      },
+      "note": "과거 관측날씨 기준 검증이며 실제 기상예보 오차는 포함하지 않음",
+      "approx_90_interval_half_width": 34.5948,
+      "last_fold_interval_coverage": 0.9194
     }
   }
 }
