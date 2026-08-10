@@ -50,6 +50,11 @@ def validate() -> None:
     for target in ("smp", "renewable_mwh"):
         if target not in metrics["targets"]:
             raise ValueError(f"{target} 평가 결과가 없습니다.")
+        if target not in metrics.get("forecast_only_targets", {}):
+            raise ValueError(f"{target} 내일 예보용 모델 평가 결과가 없습니다.")
+    score_weights = metrics.get("score_weights", {})
+    if score_weights.get("renewable") != 0.8 or score_weights.get("market_smp") != 0.2:
+        raise ValueError("Green Score 가중치는 재생에너지 80%, SMP 20%여야 합니다.")
 
     plan = make_plan(
         forecast=forecast,
@@ -61,9 +66,10 @@ def validate() -> None:
         start_hour=8,
         departure_hour=20,
         retail_price=320,
-        base_reward_rate=10,
-        bonus_reward_rate=20,
+        base_point_rate=10,
+        bonus_point_rate=20,
         reward_threshold=70,
+        session_point_cap=1500,
         continuous=True,
         conservative=True,
     )
@@ -71,18 +77,20 @@ def validate() -> None:
         raise ValueError("기본 시나리오가 목표 배터리 80%를 달성하지 못했습니다.")
     if not plan["conservative"]:
         raise ValueError("기본 시나리오가 보수적 점수를 사용하지 않았습니다.")
-    if plan["ai"]["guaranteed_reward_won"] <= 0:
-        raise ValueError("참여 보장 리워드가 계산되지 않았습니다.")
-    if plan["ai"]["settled_reward_won"] < plan["ai"]["guaranteed_reward_won"]:
-        raise ValueError("정산 리워드가 보장 리워드보다 작습니다.")
+    if plan["ai"]["guaranteed_points"] <= 0:
+        raise ValueError("참여 보장 포인트가 계산되지 않았습니다.")
+    if plan["ai"]["settled_total_points"] < plan["ai"]["guaranteed_points"]:
+        raise ValueError("정산 포인트가 보장 포인트보다 작습니다.")
+    if plan["ai"]["settled_total_points"] > 1500:
+        raise ValueError("정산 포인트가 세션 상한을 넘었습니다.")
 
     print("AI 결과 검사 통과")
     print(f"예측 행 수: {len(forecast)}")
     print(f"추천 충전량: {plan['ai']['energy_kwh']:.2f} kWh")
     print(f"예상 도달 배터리: {plan['reached_soc']:.1f}%")
-    print(f"참여 보장 리워드: {plan['ai']['guaranteed_reward_won']:,.0f}원")
-    print(f"성과형 보너스: {plan['ai']['settled_bonus_won']:,.0f}원")
-    print(f"재현 정산 리워드: {plan['ai']['settled_reward_won']:,.0f}원")
+    print(f"참여 보장 포인트: {plan['ai']['guaranteed_points']:,.0f}P")
+    print(f"성과형 보너스: {plan['ai']['settled_bonus_points']:,.0f}P")
+    print(f"재현 정산 포인트: {plan['ai']['settled_total_points']:,.0f}P")
     for target in ("smp", "renewable_mwh"):
         values = metrics["targets"][target]
         print(
