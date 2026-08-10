@@ -1,4 +1,4 @@
-"""사용자 일정 안에서 보수적인 Green Time과 리워드를 계산한다."""
+"""사용자 일정 안에서 보수적인 Green Time과 Green Point를 계산한다."""
 
 from __future__ import annotations
 
@@ -24,11 +24,12 @@ def _allocate(sorted_slots: pd.DataFrame, required_grid_kwh: float, charger_kw: 
 def _summarize(
     schedule: pd.DataFrame,
     retail_price: float,
-    base_reward_rate: float,
-    bonus_reward_rate: float,
+    base_point_rate: float,
+    bonus_point_rate: float,
     reward_threshold: float,
+    session_point_cap: float,
 ) -> dict[str, float | str]:
-    """비용과 리워드를 예측 단계와 사후 정산 단계로 분리한다."""
+    """비용과 Green Point를 예측 단계와 사후 정산 단계로 분리한다."""
     used = schedule[schedule["scheduled_kwh"] > 0].copy()
     energy = float(used["scheduled_kwh"].sum())
     gross_cost = energy * retail_price
@@ -36,16 +37,15 @@ def _summarize(
     if energy == 0:
         return {
             "energy_kwh": 0.0,
-            "guaranteed_reward_won": 0.0,
-            "expected_bonus_won": 0.0,
-            "settled_bonus_won": 0.0,
-            "expected_reward_won": 0.0,
-            "settled_reward_won": 0.0,
-            "reward_won": 0.0,
+            "guaranteed_points": 0.0,
+            "expected_bonus_points": 0.0,
+            "settled_bonus_points": 0.0,
+            "expected_total_points": 0.0,
+            "settled_total_points": 0.0,
             "gross_cost_won": 0.0,
-            "minimum_cost_won": 0.0,
-            "expected_cost_won": 0.0,
-            "settled_cost_won": 0.0,
+            "simulated_minimum_cost_won": 0.0,
+            "simulated_expected_cost_won": 0.0,
+            "simulated_settled_cost_won": 0.0,
             "market_cost_proxy_won": 0.0,
             "weighted_renewable_mwh": 0.0,
             "weighted_green_score": 0.0,
@@ -54,11 +54,14 @@ def _summarize(
         }
 
     # 추천시간을 실제로 따른 대가. 예보가 틀려도 회수하지 않는다는 정책 가정이다.
-    guaranteed_reward = energy * base_reward_rate
+    guaranteed_points = min(energy * base_point_rate, session_point_cap)
+    remaining_point_cap = max(session_point_cap - guaranteed_points, 0)
     expected_eligible = float(
         used.loc[used["green_score"] >= reward_threshold, "scheduled_kwh"].sum()
     )
-    expected_bonus = expected_eligible * bonus_reward_rate
+    expected_bonus_points = min(
+        expected_eligible * bonus_point_rate, remaining_point_cap
+    )
 
     if "actual_green_score" in used.columns:
         settled_eligible = float(
@@ -67,29 +70,30 @@ def _summarize(
                 "scheduled_kwh",
             ].sum()
         )
-        settled_bonus = settled_eligible * bonus_reward_rate
+        settled_bonus_points = min(
+            settled_eligible * bonus_point_rate, remaining_point_cap
+        )
         settlement_status = "historical_replay_settled"
     else:
-        settled_bonus = 0.0
+        settled_bonus_points = 0.0
         settlement_status = "pending_actual_data"
 
-    expected_reward = guaranteed_reward + expected_bonus
-    settled_reward = guaranteed_reward + settled_bonus
+    expected_total_points = guaranteed_points + expected_bonus_points
+    settled_total_points = guaranteed_points + settled_bonus_points
     planning_column = "planning_score" if "planning_score" in used.columns else "green_score"
 
     return {
         "energy_kwh": energy,
-        "guaranteed_reward_won": guaranteed_reward,
-        "expected_bonus_won": expected_bonus,
-        "settled_bonus_won": settled_bonus,
-        "expected_reward_won": expected_reward,
-        "settled_reward_won": settled_reward,
-        # 기존 화면·코드와의 호환을 위해 실제값이 있으면 정산액, 없으면 예상액을 반환한다.
-        "reward_won": settled_reward if settlement_status == "historical_replay_settled" else expected_reward,
+        "guaranteed_points": guaranteed_points,
+        "expected_bonus_points": expected_bonus_points,
+        "settled_bonus_points": settled_bonus_points,
+        "expected_total_points": expected_total_points,
+        "settled_total_points": settled_total_points,
         "gross_cost_won": gross_cost,
-        "minimum_cost_won": gross_cost - guaranteed_reward,
-        "expected_cost_won": gross_cost - expected_reward,
-        "settled_cost_won": gross_cost - settled_reward,
+        # 아래 비용은 1P=1원을 가정한 정책 시뮬레이션이며 실제 결제금액이 아니다.
+        "simulated_minimum_cost_won": gross_cost - guaranteed_points,
+        "simulated_expected_cost_won": gross_cost - expected_total_points,
+        "simulated_settled_cost_won": gross_cost - settled_total_points,
         "market_cost_proxy_won": float(
             (used["scheduled_kwh"] * used["predicted_smp"]).sum()
         ),
@@ -147,9 +151,10 @@ def make_plan(
     start_hour: int,
     departure_hour: int,
     retail_price: float,
-    base_reward_rate: float = 10,
-    bonus_reward_rate: float = 20,
+    base_point_rate: float = 10,
+    bonus_point_rate: float = 20,
     reward_threshold: float = 70,
+    session_point_cap: float = 1500,
     continuous: bool = True,
     conservative: bool = True,
 ) -> dict:
@@ -166,8 +171,8 @@ def make_plan(
         raise ValueError("출발 시각은 충전 시작 가능 시각보다 늦어야 합니다.")
     if battery_kwh <= 0 or charger_kw <= 0:
         raise ValueError("배터리 용량과 충전기 출력은 0보다 커야 합니다.")
-    if min(retail_price, base_reward_rate, bonus_reward_rate) < 0:
-        raise ValueError("요금과 리워드 단가는 음수가 될 수 없습니다.")
+    if min(retail_price, base_point_rate, bonus_point_rate, session_point_cap) < 0:
+        raise ValueError("요금·포인트 단가·포인트 한도는 음수가 될 수 없습니다.")
 
     data = forecast.copy()
     data["timestamp"] = pd.to_datetime(data["timestamp"])
@@ -213,9 +218,10 @@ def make_plan(
     ai_summary = _summarize(
         ai_schedule,
         retail_price,
-        base_reward_rate,
-        bonus_reward_rate,
+        base_point_rate,
+        bonus_point_rate,
         reward_threshold,
+        session_point_cap,
     )
     baseline_summary = _summarize(
         baseline_schedule,
@@ -223,6 +229,7 @@ def make_plan(
         0,
         0,
         reward_threshold,
+        0,
     )
     reached_soc = current_soc + energy_to_schedule * efficiency / battery_kwh * 100
 
