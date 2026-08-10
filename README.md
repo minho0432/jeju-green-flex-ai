@@ -1,82 +1,104 @@
-# 이민호 담당 데이터 패키지
+# 🌱 Jeju Green Flex AI
 
-제주 시간별 SMP, 연료원별 발전량, 날씨를 하나의 AI 학습용 파일로 합치는 패키지입니다.
+제주 SMP와 재생에너지 발전량을 예측하고, 전기차 사용자의 목표 SOC와 출발시간을 지키면서 보수적인 연속 충전시간을 추천하는 해커톤 MVP입니다.
 
-## 이미 포함된 원본 데이터
+> 현재 버전은 2025년 과거 데이터를 이용한 재현 시뮬레이션입니다. 실제 요금 할인, 실제 페이백, 실제 충전기 제어 또는 REC 인증을 구현한 서비스가 아닙니다.
 
-- 2025년 제주 태양광 발전량
-- 2025년 제주 풍력 발전량
-- 2025년 제주 LNG 발전량
-- 2025년 제주 바이오중유 발전량
-- 2025년 제주 날씨
+## 가장 쉬운 실행 방법
 
-## 실행 방법
+### macOS
 
-### 맥에서 지금부터 실행할 명령
-
-Pandas와 데이터 검사를 통과했다면 VS Code 터미널에서 아래 두 줄만 실행합니다.
+VS Code 터미널에서 프로젝트 폴더로 이동한 뒤 실행합니다.
 
 ```bash
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python scripts/validate_data.py
 python scripts/train_models.py
+python scripts/validate_ai.py
 python -m streamlit run app.py
 ```
 
-브라우저가 자동으로 열리면 왼쪽에서 차량 조건을 바꾸며 데모합니다.
+브라우저가 열리면 왼쪽에서 현재 SOC, 목표 SOC, 출발시간과 리워드 가정을 바꿔봅니다.
 
-더블클릭으로 실행하려면 `RUN_DEMO_MAC.command`를 사용합니다. macOS가 실행 권한을 요구하면
-터미널에서 한 번만 `chmod +x RUN_DEMO_MAC.command SETUP_MAC.command`를 실행합니다.
+### Windows
 
-### 윈도우에서 가장 쉬운 방법
+1. `SETUP_WINDOWS.bat` 실행
+2. `RUN_WINDOWS.bat` 실행
 
-1. 압축을 푼 뒤 `SETUP_WINDOWS.bat`을 먼저 더블클릭합니다.
-2. 마지막에 `설치와 검사가 모두 성공했습니다`가 나오는지 확인합니다.
-3. 데이터를 다시 만들고 싶을 때 `RUN_WINDOWS.bat`을 더블클릭합니다.
-4. VS Code에서 `Ctrl+Shift+P` → `Python: Select Interpreter` → `.venv\\Scripts\\python.exe`를 선택합니다.
-5. `.ipynb` 파일을 열었다면 오른쪽 위 `커널 선택`에서도 같은 `.venv`를 선택합니다.
-
-### 직접 실행하는 방법
-
-터미널에서 이 폴더로 이동한 뒤 아래 명령을 순서대로 실행합니다.
+## 발표 전에 한 번에 검사
 
 ```bash
-pip install -r requirements.txt
-python scripts/download_smp.py
-python scripts/prepare_data.py
 python scripts/validate_data.py
+python scripts/train_models.py
+python scripts/validate_ai.py
+python -m unittest discover -s tests -v
 ```
 
-## 최종 결과
+모든 단계가 통과해야 발표용 버전입니다. GitHub에 변경사항을 올리면 같은 검사가 자동으로 다시 실행됩니다.
 
-AI 담당자에게 아래 파일을 전달합니다.
+## 핵심 구현
+
+- 2025년 제주 시간별 데이터 8,760행
+- 24시간·168시간 시차 특징
+- 서로 다른 5개 기간 × 30일 시간순 백테스트
+- 세 가지 강한 단순 기준과 비교
+- SMP와 재생에너지 예측의 약 90% 예상 범위
+- 불리한 예측값으로 계산하는 보수적 `planning_score`
+- 목표 SOC·출발시간·충전출력을 지키는 연속 시간 최적화
+- 참여 보장 리워드 + 실제 성과 보너스 분리
+- 데이터·AI 결과·최적화 자동검사
+
+## 검증 결과
+
+| 대상 | AI MAE | 가장 강한 기준 MAE | 개선율 |
+|---|---:|---:|---:|
+| SMP | 10.7418원/kWh | 11.2154 | 4.22% |
+| 재생에너지 | 10.9011MWh | 15.7213 | 30.66% |
+
+MAE는 예측과 실제의 평균적인 절대 차이이며 작을수록 좋습니다. 실행 환경에 따라 마지막 자릿수는 조금 달라질 수 있으므로 발표에는 직접 실행한 `outputs/model_metrics.json`의 값을 사용합니다.
+
+## 문서 안내
+
+- [TEAM_EXPLANATION.md](TEAM_EXPLANATION.md): 비전공자도 발표할 수 있는 전체 해설과 예상 질문
+- [MODEL_CARD.md](MODEL_CARD.md): 모델 구조, 검증 결과, 한계, 가능한 주장
+- [CHANGELOG.md](CHANGELOG.md): 초기 버전에서 무엇이 바뀌었는지
+- [data_dictionary.md](data_dictionary.md): 데이터 열의 의미
+
+## 주요 파일
+
+| 파일 | 역할 |
+|---|---|
+| `scripts/prepare_data.py` | 원본 데이터 통합 |
+| `scripts/validate_data.py` | 데이터 품질 검사 |
+| `scripts/train_models.py` | 모델 학습·5회 백테스트·예측범위 생성 |
+| `scripts/optimizer.py` | 충전시간과 리워드 계산 |
+| `scripts/validate_ai.py` | 발표용 결과 자동검사 |
+| `tests/test_optimizer.py` | 최적화·리워드 규칙 단위테스트 |
+| `app.py` | Streamlit 데모 화면 |
+
+## 기본 리워드 예시
+
+기본 조건은 SOC 30%→80%, 배터리 60kWh, 효율 90%, 7kW 충전기입니다.
 
 ```text
-data/processed/train.csv
-data/demo/demo_forecast.csv
-data_dictionary.md
+필요한 계통 충전량 = 60 × (80%-30%) ÷ 0.9 = 33.33kWh
+참여 보장 = 33.33 × 10원 ≈ 333원
+성과 보너스 = 실제 기준을 통과한 충전량 × 20원
 ```
 
-AI 학습 후에는 아래 파일도 생성됩니다.
+기본 과거 재현에서는 총 리워드가 약 860원으로 계산됩니다. 이 단가는 법정요금이나 실제 제휴단가가 아니라 MVP 정책 가정입니다.
 
-```text
-models/smp_model.joblib
-models/renewable_mwh_model.joblib
-outputs/model_metrics.json
-outputs/demo_predictions.csv
-```
+## 현재 한계
 
-## 데모에서 사실대로 말해야 하는 것
+- 데이터 기간은 2025년 1년입니다.
+- 과거 관측 날씨로 과거 예측을 재현하며 실시간 예보 API는 연결하지 않았습니다.
+- 제주 전력수요·발전기 상태·HVDC·출력제어 예고는 모델 입력에 없습니다.
+- SMP는 소비자 실제 충전요금이 아닙니다.
+- 실제 충전 세션, 결제, 리워드 지급과 충전기 제어는 구현하지 않았습니다.
 
-- SMP는 전력 도매가격 지표이며 소비자의 실제 충전요금과 같지 않습니다.
-- Green Reward는 운영자 캠페인 예산을 가정한 시뮬레이션입니다.
-- 실제 지급에는 충전사업자·렌터카사·지자체 중 한 곳과의 제휴가 필요합니다.
-- 실제 충전기 제어와 REC 인증을 구현했다고 주장하지 않습니다.
-
-## 이민호님이 팀에 설명할 말
-
-> 제주 시간별 SMP, 태양광·풍력 발전량과 날씨를 같은 시간 기준으로 합쳐 AI 학습용 데이터셋을 만들었습니다. 전력거래소의 시간 표기 차이를 맞췄고, 중복·결측값과 재생에너지 합계도 검사했습니다.
-
-## 공식 출처
+## 데이터 출처
 
 - 제주 SMP: https://epsis.kpx.or.kr/epsisnew/selectEkmaSmpShdChart.do?menuId=040202
-- 제주 발전량: https://www.data.go.kr/data/15138838/fileData.do
+- 제주 연료원별 발전량: https://www.data.go.kr/data/15138838/fileData.do
 - 날씨: https://open-meteo.com/en/docs/historical-weather-api
