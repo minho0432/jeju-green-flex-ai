@@ -105,6 +105,8 @@ def validate() -> None:
         raise ValueError("실시간 보정 재현이 미래 실제 점수로 정산할 위험이 있습니다.")
     if adjustment_metadata["observed_hours"] != 11:
         raise ValueError("실시간 보정에 사용한 관측시간 수가 예상과 다릅니다.")
+    if pd.Timestamp(adjustment_metadata["score_reference_end"]) > replay_as_of:
+        raise ValueError("실시간 보정 점수 기준에 미래 데이터가 포함되었습니다.")
 
     print("AI 결과 검사 통과")
     print(f"예측 행 수: {len(forecast)}")
