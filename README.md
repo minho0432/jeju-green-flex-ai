@@ -23,7 +23,9 @@
 | 실시간 보정 재현 | 선택한 현재 시각까지만 과거 실측값을 순서대로 공개 | 실제값 도착→오차 확인→남은 예측 보정→충전시간 재계산을 검증 |
 | 내일 예보 실험 | Open-Meteo의 제주시 내일 시간별 기상예보 | 실제 서비스처럼 보이는 24시간 추천 실험 |
 
-내일 예보 실험은 실제 API를 쓰지만, 과거에 발표됐던 기상예보 자체의 오차까지 검증한 모델은 아닙니다. 따라서 공식 성능 수치는 검증된 과거 재현 결과만 사용합니다.
+Open-Meteo는 관측소가 실제 날씨를 재는 센서가 아니라 수치모델이 계산한 **기상예보 API**입니다. 자주 갱신돼도 비구름과 바람이 예상과 다르게 움직이면 일사량과 재생에너지 예측은 틀릴 수 있습니다. 따라서 공식 성능 수치는 검증된 과거 재현 결과만 사용합니다.
+
+이 위험을 줄이기 위해 오늘·내일 모드에서는 별도의 Open-Meteo Ensemble API도 호출합니다. 초기조건을 조금씩 바꾼 여러 날씨 시나리오를 각각 AI에 통과시키고, 재생에너지·SMP 예측의 10~90 백분위 차이를 기존 오차범위에 추가합니다. 앙상블 API가 실패하면 앱은 멈추지 않고 기존의 보수적 예상범위로 돌아갑니다.
 
 `오늘 공식 실시간 관측`은 공공데이터포털 인증키를 설정했을 때 작동합니다. 5분 단위 MW를 시간별 태양광+풍력 MWh로 변환하고, 한 시간의 5분 자료 12개가 모두 모인 완료 시간만 사용합니다. 11개만 합치면 에너지가 약 8.3% 작게 계산될 수 있기 때문입니다. 최근 3시간의 `실제값-예측값` 편차로 아직 지나지 않은 재생에너지 예측만 수정합니다. 이 API에는 SMP 실측이 없으므로 SMP 예측은 고치지 않습니다. 다음 한 시간에 편차를 가장 크게 반영하고 먼 시간일수록 영향력을 줄인 뒤 Green Score와 충전계획을 다시 계산합니다.
 
@@ -41,6 +43,16 @@ DATA_GO_KR_SERVICE_KEY = "발급받은_일반인증키"
 ```
 
 실제 키를 GitHub, 카카오톡, 이 대화창에 올리면 안 됩니다. 앱은 개발계정의 하루 100회 제한을 보호하기 위해 API 결과를 20분 동안 저장합니다. 따라서 일반 새로고침은 즉시 추가 호출하지 않으며 최대 약 20분 이내 자료를 보여 줄 수 있습니다.
+
+## 제주 충전소 위치·상태 연결
+
+사이드바에서 `제주 충전소 위치·상태 불러오기`를 선택하면 한국환경공단 API로 제주 충전기 상태, 충전소명·주소·좌표·출력·운영시간을 조회합니다.
+
+1. [한국환경공단 전기자동차 충전소 정보 API](https://www.data.go.kr/tcs/dss/selectApiDataDetailView.do?publicDataPk=15076352)를 별도로 활용신청합니다.
+2. 기존 공공데이터포털 키가 승인된 서비스에 접근할 수 있으면 추가 Secret 없이 사용합니다.
+3. 앱은 사용자가 체크박스를 선택할 때만 호출하고 결과를 10분 저장합니다.
+
+공개 API의 상태갱신이 지연될 수 있으므로 실제 출발 직전에는 충전사업자 앱에서 다시 확인해야 합니다. 이 API는 위치·상태 조회용이며 예약·결제·실제 포인트 지급 권한은 제공하지 않습니다.
 
 ## Green Score와 SMP
 
@@ -118,7 +130,7 @@ python scripts/validate_ai.py
 python -m unittest discover -s tests -v
 ```
 
-현재 자동검사는 데이터 8,760행, AI 결과 24시간, 목표 SOC 달성, 80:20 점수, 예산 기반 단가, 3단계 보너스, 포인트 상한, 예보 실패 대응, 실시간 보정의 미래값 차단, MW→MWh 단위 변환, 11/12 불완전 시간 차단, 공공데이터포털 XML 오류 해석을 확인합니다.
+현재 자동검사는 데이터 8,760행, AI 결과 24시간, 목표 SOC 달성, 80:20 점수, 예산 기반 단가, 3단계 보너스, 포인트 상한, 예보 실패 대응, 실시간 보정의 미래값 차단, MW→MWh 단위 변환, 11/12 불완전 시간 차단, 날씨 시나리오 파싱·예상범위 확대, 충전소 위치·상태 파싱과 공공데이터포털 XML 오류 해석을 확인합니다.
 
 ## 주요 파일
 
@@ -129,13 +141,17 @@ python -m unittest discover -s tests -v
 | `scripts/model_utils.py` | AI 입력 특징과 80:20 점수 계산 |
 | `scripts/train_models.py` | 모델 학습·5회 백테스트·예측범위 생성 |
 | `scripts/live_forecast.py` | Open-Meteo 내일 예보 조회와 실험용 예측 |
+| `scripts/weather_ensemble.py` | 여러 날씨 시나리오를 AI에 통과시켜 예상범위 확대 |
 | `scripts/jeju_grid_live.py` | KPX 제주 5분 실측 조회·검증·MW→시간별 MWh 변환 |
+| `scripts/ev_charger_live.py` | 한국환경공단 제주 충전소 위치·상태 선택 조회 |
 | `scripts/realtime_adjustment.py` | 도착 실측으로 미래 예측 보정·5분 MW를 시간별 MWh로 변환 |
 | `scripts/optimizer.py` | 목표 SOC를 지키는 충전시간·포인트 계산 |
 | `scripts/validate_ai.py` | 발표용 결과 자동검사 |
 | `tests/test_optimizer.py` | 최적화·포인트 규칙 단위테스트 9개 |
 | `tests/test_realtime_adjustment.py` | 실시간 보정·미래값 차단·단위 변환 테스트 6개 |
 | `tests/test_jeju_grid_live.py` | 공식 API JSON/XML 파싱·오류·키 인코딩·완성도·최신성·단위 변환 테스트 8개 |
+| `tests/test_weather_ensemble.py` | 날씨 시나리오·24시간 완전성·예상범위 확대 테스트 4개 |
+| `tests/test_ev_charger_live.py` | 충전소 위치·상태·제주필터·인증오류 테스트 4개 |
 | `app.py` | Streamlit 데모 화면 |
 
 ## 현재 구현한 것과 남은 것
@@ -147,10 +163,12 @@ python -m unittest discover -s tests -v
 - 약 90% 예상범위와 보수적 점수
 - 목표 SOC·출발시간·충전출력을 지키는 연속 시간 추천
 - 검증된 과거 재현과 내일 기상예보 실험 모드
+- 여러 날씨 시나리오를 AI에 통과시킨 동적 불확실성 확대
 - 실측 도착에 따른 미래 예측·Green Score·충전계획 재계산 구조와 과거 재현
 - 공공데이터포털 KPX 제주 5분 신재생·태양광·풍력·수요·공급 실측 연결 코드
 - 실시간 API 결과 검증, 20분 캐시, 관측 최신성·완료시간 표시, 키 누락·장애 시 안전한 기존 데모 유지
 - 5분 MW 실측을 시간별 MWh로 바꾸면서 누락률을 확인하는 변환 함수
+- 한국환경공단 제주 충전소 위치·상태 선택 조회, 검색·지도·상태 요약
 - 월 예산 기반 Green 충전 크레딧·3단계 성과 보너스·세션 상한
 - GitHub Actions 자동검사
 
@@ -176,9 +194,11 @@ python -m unittest discover -s tests -v
 - 제주 연료원별 발전량: https://www.data.go.kr/data/15138838/fileData.do
 - 과거 날씨: https://open-meteo.com/en/docs/historical-weather-api
 - 내일 날씨예보: https://open-meteo.com/en/docs/gfs-api
+- 다중 날씨 시나리오: https://open-meteo.com/en/docs/ensemble-api
 - 제주 5분 계통·신재생 실측: https://www.data.go.kr/data/15158505/openapi.do
+- 제주 충전소 위치·상태: https://www.data.go.kr/tcs/dss/selectApiDataDetailView.do?publicDataPk=15076352
 
-다음 API를 무엇부터 붙여야 하는지는 [API_ROADMAP.md](API_ROADMAP.md)에 별도로 정리했습니다. 가장 먼저 필요한 것은 충전소 위치·운영상태이고, 실제 포인트 지급에는 공개 API가 아니라 충전사업자의 세션·결제 제휴 API가 필요합니다.
+추가 API의 구현상태와 다음 순서는 [API_ROADMAP.md](API_ROADMAP.md)에 정리했습니다. 위치·상태 조회 코드는 구현됐고 별도 활용승인 확인이 남았습니다. 실제 포인트 지급에는 공개 API가 아니라 충전사업자의 세션·결제 제휴 API가 필요합니다.
 
 ## 한 문장 주의사항
 
