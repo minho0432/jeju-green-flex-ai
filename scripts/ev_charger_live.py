@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Iterable
 from typing import Any
 from urllib.parse import unquote, urlencode
 from urllib.request import Request, urlopen
@@ -19,6 +21,15 @@ STATUS_LABELS = {
     "4": "운영중지",
     "5": "점검중",
     "9": "상태미확인",
+}
+CHARGER_FIT_LABELS = {
+    "matched": "현재 조건 일치",
+    "unavailable": "현재 이용 불가",
+    "restricted": "이용 제한 확인 필요",
+    "output_unknown": "출력 확인 필요",
+    "output_low": "출력 부족",
+    "hours_unknown": "운영시간 확인 필요",
+    "hours_closed": "추천시간 운영 안 함",
 }
 DISPLAY_COLUMNS = [
     "station_name",
@@ -162,3 +173,117 @@ def charger_status_summary(frame: pd.DataFrame) -> dict[str, int]:
         "unavailable": int(statuses.isin(["1", "4", "5"]).sum()),
         "unknown": int((~statuses.isin(["1", "2", "3", "4", "5"])).sum()),
     }
+
+
+def _parse_daily_operating_minutes(value: Any) -> tuple[int, int] | None:
+    """단순한 매일 운영시간을 분 단위로 바꾼다.
+
+    요일마다 시간이 다른 문구는 잘못 해석하지 않도록 None으로 남긴다.
+    """
+    if value is None or pd.isna(value):
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    compact = re.sub(r"\s+", "", text)
+    if "24시간" in compact or compact.lower() in {"24h", "24hours"}:
+        return 0, 24 * 60
+    if re.search(r"평일|주말|공휴일|토요일|일요일|월요일|화요일|수요일|목요일|금요일", text):
+        return None
+
+    ranges = re.findall(
+        r"(?<!\d)(\d{1,2})(?::(\d{2}))?\s*[~∼～-]\s*"
+        r"(\d{1,2})(?::(\d{2}))?(?!\d)",
+        text,
+    )
+    if len(ranges) != 1:
+        return None
+    start_hour, start_minute, end_hour, end_minute = ranges[0]
+    start_hour = int(start_hour)
+    start_minute = int(start_minute or 0)
+    end_hour = int(end_hour)
+    end_minute = int(end_minute or 0)
+    if not (0 <= start_hour <= 23 and 0 <= start_minute <= 59):
+        return None
+    if not (0 <= end_hour <= 24 and 0 <= end_minute <= 59):
+        return None
+    if end_hour == 24 and end_minute != 0:
+        return None
+    start = start_hour * 60 + start_minute
+    end = end_hour * 60 + end_minute
+    if start == end:
+        return None
+    return start, end
+
+
+def operating_hours_cover_slots(
+    available_time: Any, charging_slots: Iterable[pd.Timestamp]
+) -> bool | None:
+    """운영시간이 추천된 각 1시간 충전칸을 모두 포함하는지 검사한다.
+
+    True/False를 확정할 수 없는 복잡한 문구는 None을 반환한다.
+    """
+    operating_range = _parse_daily_operating_minutes(available_time)
+    if operating_range is None:
+        return None
+    slots = [pd.Timestamp(value) for value in charging_slots]
+    if not slots:
+        return None
+
+    start, end = operating_range
+    if start == 0 and end == 24 * 60:
+        return True
+    for timestamp in slots:
+        slot_start = timestamp.hour * 60 + timestamp.minute
+        slot_end = slot_start + 60
+        if end > start:
+            covered = start <= slot_start and slot_end <= end
+        else:
+            adjusted_start = slot_start + (24 * 60 if slot_start < end else 0)
+            covered = start <= adjusted_start and slot_end + (
+                24 * 60 if slot_start < end else 0
+            ) <= end + 24 * 60
+        if not covered:
+            return False
+    return True
+
+
+def assess_charger_compatibility(
+    frame: pd.DataFrame,
+    charging_slots: Iterable[pd.Timestamp],
+    requested_output_kw: float,
+) -> pd.DataFrame:
+    """현재 상태·출력·운영시간으로 충전소가 추천 계획과 맞는지 표시한다.
+
+    API의 현재 상태는 예약이나 미래 이용 가능성을 보장하지 않으므로, 모든 조건이
+    맞아도 '현재 조건 일치'라고만 표시한다.
+    """
+    if requested_output_kw <= 0:
+        raise ValueError("비교할 충전기 출력은 0보다 커야 합니다.")
+    slots = [pd.Timestamp(value) for value in charging_slots]
+    result = frame.copy()
+    result["operating_hours_match"] = result["available_time"].apply(
+        lambda value: operating_hours_cover_slots(value, slots)
+    )
+
+    def fit_label(row: pd.Series) -> str:
+        if str(row["status_code"]) != "2":
+            return CHARGER_FIT_LABELS["unavailable"]
+        if str(row.get("user_limit", "")).strip().upper() == "Y":
+            return CHARGER_FIT_LABELS["restricted"]
+        if pd.isna(row["output_kw"]):
+            return CHARGER_FIT_LABELS["output_unknown"]
+        if float(row["output_kw"]) < requested_output_kw:
+            return CHARGER_FIT_LABELS["output_low"]
+        hours_match = row["operating_hours_match"]
+        if pd.isna(hours_match):
+            return CHARGER_FIT_LABELS["hours_unknown"]
+        if not bool(hours_match):
+            return CHARGER_FIT_LABELS["hours_closed"]
+        return CHARGER_FIT_LABELS["matched"]
+
+    result["recommendation_status"] = result.apply(fit_label, axis=1)
+    result["matches_current_conditions"] = (
+        result["recommendation_status"] == CHARGER_FIT_LABELS["matched"]
+    )
+    return result
