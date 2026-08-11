@@ -53,8 +53,10 @@ def train_forecast_only_models() -> tuple[dict[str, object], pd.DataFrame]:
     return models, history
 
 
-def fetch_open_meteo_forecast() -> pd.DataFrame:
-    """제주시 기준 내일 0~23시의 시간별 예보를 가져온다."""
+def fetch_open_meteo_forecast(target_day_offset: int = 1) -> pd.DataFrame:
+    """제주시 기준 오늘(0) 또는 내일(1) 0~23시 예보를 가져온다."""
+    if target_day_offset not in {0, 1}:
+        raise ValueError("날씨예보 날짜 간격은 오늘 0 또는 내일 1이어야 합니다.")
     query = urlencode(
         {
             "latitude": JEJU_LATITUDE,
@@ -82,7 +84,7 @@ def fetch_open_meteo_forecast() -> pd.DataFrame:
         frame[column] = pd.to_numeric(hourly[column], errors="coerce")
 
     now = pd.Timestamp.now(tz="Asia/Seoul").tz_localize(None)
-    target_date = (now + pd.Timedelta(days=1)).date()
+    target_date = (now + pd.Timedelta(days=target_day_offset)).date()
     frame = frame[frame["timestamp"].dt.date == target_date].reset_index(drop=True)
     if len(frame) != 24 or frame[WEATHER_COLUMNS].isna().any().any():
         raise RuntimeError("다음 24시간의 완전한 날씨예보를 만들지 못했습니다.")
