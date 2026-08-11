@@ -6,13 +6,17 @@ import sys
 import unittest
 from pathlib import Path
 
+import pandas as pd
+
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from ev_charger_live import (  # noqa: E402
     EvChargerApiError,
+    assess_charger_compatibility,
     build_request_url,
     charger_status_summary,
+    operating_hours_cover_slots,
     parse_charger_response,
 )
 
@@ -62,6 +66,67 @@ class EvChargerLiveTests(unittest.TestCase):
             parse_charger_response(payload)
         self.assertIn("30", str(context.exception))
         self.assertNotIn("serviceKey=", str(context.exception))
+
+    def test_only_waiting_charger_matches_current_conditions(self):
+        frame = parse_charger_response(response_xml())
+        result = assess_charger_compatibility(
+            frame,
+            [pd.Timestamp("2026-08-11 12:00")],
+            requested_output_kw=50,
+        )
+        self.assertEqual(result.iloc[0]["recommendation_status"], "현재 조건 일치")
+        self.assertEqual(result.iloc[1]["recommendation_status"], "현재 이용 불가")
+        self.assertEqual(int(result["matches_current_conditions"].sum()), 1)
+
+    def test_charger_with_too_little_output_is_not_matched(self):
+        frame = parse_charger_response(response_xml()).iloc[[0]].copy()
+        result = assess_charger_compatibility(
+            frame,
+            [pd.Timestamp("2026-08-11 12:00")],
+            requested_output_kw=100,
+        )
+        self.assertEqual(result.iloc[0]["recommendation_status"], "출력 부족")
+
+    def test_daily_hours_must_cover_every_recommended_slot(self):
+        slots = [pd.Timestamp("2026-08-11 17:00")]
+        self.assertTrue(operating_hours_cover_slots("09:00~18:00", slots))
+        self.assertFalse(
+            operating_hours_cover_slots(
+                "09:00~18:00", [pd.Timestamp("2026-08-11 18:00")]
+            )
+        )
+
+    def test_overnight_hours_are_supported(self):
+        self.assertTrue(
+            operating_hours_cover_slots(
+                "22:00~06:00",
+                [pd.Timestamp("2026-08-11 23:00"), pd.Timestamp("2026-08-12 05:00")],
+            )
+        )
+        self.assertFalse(
+            operating_hours_cover_slots(
+                "22:00~06:00", [pd.Timestamp("2026-08-11 21:00")]
+            )
+        )
+
+    def test_complex_weekday_hours_require_manual_confirmation(self):
+        result = operating_hours_cover_slots(
+            "평일 09:00~18:00 / 주말 휴무",
+            [pd.Timestamp("2026-08-11 12:00")],
+        )
+        self.assertIsNone(result)
+
+    def test_restricted_charger_requires_confirmation(self):
+        frame = parse_charger_response(response_xml()).iloc[[0]].copy()
+        frame.loc[:, "user_limit"] = "Y"
+        result = assess_charger_compatibility(
+            frame,
+            [pd.Timestamp("2026-08-11 12:00")],
+            requested_output_kw=50,
+        )
+        self.assertEqual(
+            result.iloc[0]["recommendation_status"], "이용 제한 확인 필요"
+        )
 
 
 if __name__ == "__main__":

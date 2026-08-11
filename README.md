@@ -52,6 +52,11 @@ DATA_GO_KR_SERVICE_KEY = "발급받은_일반인증키"
 2. 기존 공공데이터포털 키가 승인된 서비스에 접근할 수 있으면 추가 Secret 없이 사용합니다.
 3. 앱은 사용자가 체크박스를 선택할 때만 호출하고 결과를 10분 저장합니다.
 
+조회 뒤에는 AI가 고른 충전 시간칸과 사용자가 선택한 충전기 출력을 함께 검사합니다. 현재
+`충전대기` 상태이고, 계획 출력 이상이며, 공개된 운영시간이 모든 추천 시간칸을 포함하는
+충전기만 `현재 조건 일치`로 표시합니다. 요일별 운영처럼 문구를 확실히 해석할 수 없거나
+이용 제한이 있는 충전기는 추천하지 않고 확인이 필요한 이유를 보여 줍니다.
+
 공개 API의 상태갱신이 지연될 수 있으므로 실제 출발 직전에는 충전사업자 앱에서 다시 확인해야 합니다. 이 API는 위치·상태 조회용이며 예약·결제·실제 포인트 지급 권한은 제공하지 않습니다.
 
 ## Green Score와 SMP
@@ -130,7 +135,7 @@ python scripts/validate_ai.py
 python -m unittest discover -s tests -v
 ```
 
-현재 자동검사는 데이터 8,760행, AI 결과 24시간, 목표 SOC 달성, 80:20 점수, 예산 기반 단가, 3단계 보너스, 포인트 상한, 예보 실패 대응, 실시간 보정의 미래값 차단, MW→MWh 단위 변환, 11/12 불완전 시간 차단, 날씨 시나리오 파싱·예상범위 확대, 충전소 위치·상태 파싱과 공공데이터포털 XML 오류 해석을 확인합니다.
+현재 자동검사는 데이터 8,760행, AI 결과 24시간, 목표 SOC 달성, 80:20 점수, 예산 기반 단가, 3단계 보너스, 포인트 상한, 예보 실패 대응, 실시간 보정의 미래값 차단, MW→MWh 단위 변환, 11/12 불완전 시간 차단, 날씨 시나리오 파싱·예상범위 확대, 충전소 위치·상태 파싱, 현재 상태·출력·운영시간 적합성, 공공데이터포털 XML 오류 해석을 확인합니다.
 
 ## 주요 파일
 
@@ -143,7 +148,7 @@ python -m unittest discover -s tests -v
 | `scripts/live_forecast.py` | Open-Meteo 내일 예보 조회와 실험용 예측 |
 | `scripts/weather_ensemble.py` | 여러 날씨 시나리오를 AI에 통과시켜 예상범위 확대 |
 | `scripts/jeju_grid_live.py` | KPX 제주 5분 실측 조회·검증·MW→시간별 MWh 변환 |
-| `scripts/ev_charger_live.py` | 한국환경공단 제주 충전소 위치·상태 선택 조회 |
+| `scripts/ev_charger_live.py` | 한국환경공단 제주 충전소 조회와 추천시간 적합성 검사 |
 | `scripts/realtime_adjustment.py` | 도착 실측으로 미래 예측 보정·5분 MW를 시간별 MWh로 변환 |
 | `scripts/optimizer.py` | 목표 SOC를 지키는 충전시간·포인트 계산 |
 | `scripts/validate_ai.py` | 발표용 결과 자동검사 |
@@ -151,7 +156,7 @@ python -m unittest discover -s tests -v
 | `tests/test_realtime_adjustment.py` | 실시간 보정·미래값 차단·단위 변환 테스트 6개 |
 | `tests/test_jeju_grid_live.py` | 공식 API JSON/XML 파싱·오류·키 인코딩·완성도·최신성·단위 변환 테스트 8개 |
 | `tests/test_weather_ensemble.py` | 날씨 시나리오·24시간 완전성·예상범위 확대 테스트 4개 |
-| `tests/test_ev_charger_live.py` | 충전소 위치·상태·제주필터·인증오류 테스트 4개 |
+| `tests/test_ev_charger_live.py` | 충전소 위치·상태·출력·운영시간·인증오류 테스트 10개 |
 | `app.py` | Streamlit 데모 화면 |
 
 ## 현재 구현한 것과 남은 것
@@ -169,6 +174,7 @@ python -m unittest discover -s tests -v
 - 실시간 API 결과 검증, 20분 캐시, 관측 최신성·완료시간 표시, 키 누락·장애 시 안전한 기존 데모 유지
 - 5분 MW 실측을 시간별 MWh로 바꾸면서 누락률을 확인하는 변환 함수
 - 한국환경공단 제주 충전소 위치·상태 선택 조회, 검색·지도·상태 요약
+- 현재 충전대기 상태·계획 출력·추천시간 운영 여부를 함께 검사하는 충전소 필터
 - 월 예산 기반 Green 충전 크레딧·3단계 성과 보너스·세션 상한
 - GitHub Actions 자동검사
 

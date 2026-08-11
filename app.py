@@ -21,6 +21,7 @@ from live_forecast import (  # noqa: E402
 )
 from ev_charger_live import (  # noqa: E402
     EvChargerApiError,
+    assess_charger_compatibility,
     charger_status_summary,
     fetch_jeju_ev_chargers,
 )
@@ -719,46 +720,81 @@ if show_chargers:
         try:
             chargers = load_jeju_chargers(charger_service_key)
             charger_summary = charger_status_summary(chargers)
-            c1, c2, c3, c4 = st.columns(4)
+            charging_slots = (
+                plan["ai_schedule"]
+                .loc[plan["ai_schedule"]["scheduled_kwh"] > 0, "timestamp"]
+                .sort_values()
+                .tolist()
+            )
+            assessed_chargers = assess_charger_compatibility(
+                chargers,
+                charging_slots=charging_slots,
+                requested_output_kw=charger_kw,
+            )
+            matched_count = int(
+                assessed_chargers["matches_current_conditions"].sum()
+            )
+            c1, c2, c3, c4, c5 = st.columns(5)
             c1.metric("조회 충전기", f"{charger_summary['total']:,}대")
             c2.metric("충전대기", f"{charger_summary['available']:,}대")
             c3.metric("충전중", f"{charger_summary['charging']:,}대")
             c4.metric("이상·중지·점검", f"{charger_summary['unavailable']:,}대")
+            c5.metric("현재 조건 일치", f"{matched_count:,}대")
+            slot_text = ", ".join(
+                pd.Timestamp(timestamp).strftime("%H:%M") for timestamp in charging_slots
+            )
+            st.caption(
+                f"AI 추천 시간칸 {slot_text} · 계획 출력 {charger_kw:g}kW를 기준으로 "
+                "현재 상태와 운영시간을 함께 검사했습니다."
+            )
+            show_only_matched = st.checkbox(
+                "현재 상태·출력·운영시간이 계획과 맞는 충전기만 보기",
+                value=True,
+            )
             search_text = st.text_input("충전소명 또는 주소 검색", value="")
-            filtered = chargers
+            filtered = assessed_chargers
+            if show_only_matched:
+                filtered = filtered[filtered["matches_current_conditions"]]
             if search_text.strip():
                 mask = (
-                    chargers["station_name"].str.contains(
+                    filtered["station_name"].str.contains(
                         search_text.strip(), case=False, na=False
                     )
-                    | chargers["address"].str.contains(
+                    | filtered["address"].str.contains(
                         search_text.strip(), case=False, na=False
                     )
                 )
-                filtered = chargers[mask]
-            st.dataframe(
-                filtered[
-                    [
-                        "station_name",
-                        "address",
-                        "status_label",
-                        "output_kw",
-                        "available_time",
-                        "operator_name",
-                        "status_updated_at",
-                    ]
-                ].head(100),
-                use_container_width=True,
-                hide_index=True,
-            )
+                filtered = filtered[mask]
+            if filtered.empty:
+                st.info(
+                    "현재 조건과 검색어를 모두 만족하는 충전기가 없습니다. "
+                    "필터를 해제하면 제외·확인 필요 사유를 볼 수 있습니다."
+                )
+            else:
+                st.dataframe(
+                    filtered[
+                        [
+                            "recommendation_status",
+                            "station_name",
+                            "address",
+                            "status_label",
+                            "output_kw",
+                            "available_time",
+                            "operator_name",
+                            "status_updated_at",
+                        ]
+                    ].head(100),
+                    use_container_width=True,
+                    hide_index=True,
+                )
             map_data = filtered.dropna(subset=["latitude", "longitude"]).rename(
                 columns={"latitude": "lat", "longitude": "lon"}
             )
             if not map_data.empty:
                 st.map(map_data[["lat", "lon"]].head(300))
             st.caption(
-                "실시간 상태는 운영기관 갱신 지연이 있을 수 있습니다. 실제 출발 전에는 "
-                "충전사업자 앱에서 최종 확인해야 합니다."
+                "'현재 조건 일치'는 예약이나 미래 이용 가능 보장이 아닙니다. 상태 갱신이 "
+                "늦거나 이후 바뀔 수 있으므로 실제 출발 전에는 충전사업자 앱에서 다시 확인하세요."
             )
         except (EvChargerApiError, ValueError, OSError) as error:
             st.warning(str(error))
@@ -774,7 +810,8 @@ with st.expander("현재 구현한 것과 아직 구현하지 않은 것"):
         불확실성 확대, 두 종류의 예측 모델,
         KPX 제주 5분 태양광·풍력·수요·공급 실측 연결, 도착한 재생에너지 실측으로 남은 예측과
         충전시간을 다시 계산하는 보정, API 장애용 과거 재현, 보수적 연속 충전시간,
-        한국환경공단 제주 충전소 위치·상태 선택 조회, Green Point 정책,
+        한국환경공단 제주 충전소 위치·상태 선택 조회와 현재 상태·출력·운영시간 적합성 검사,
+        Green Point 정책,
         목표 SOC 불가능 경고, 자동검사.
 
         **미구현:** 충전사업자 결제 연동, 실제 포인트 지급, 실제 충전기 제어,
