@@ -175,7 +175,15 @@ def adjust_forecast_with_observations(
         0,
     )
 
-    _recalculate_scores(result, history)
+    score_history = history.copy()
+    score_reference_end = "timestamp_not_available"
+    if "timestamp" in score_history.columns:
+        score_history["timestamp"] = pd.to_datetime(score_history["timestamp"])
+        score_history = score_history[score_history["timestamp"] <= as_of]
+        if score_history.empty:
+            raise ValueError("현재 시각 이전의 Green Score 기준 데이터가 없습니다.")
+        score_reference_end = score_history["timestamp"].max().isoformat()
+    _recalculate_scores(result, score_history)
     result["source_mode"] = "historical_realtime_adjustment_replay"
     result["observation_as_of"] = as_of
 
@@ -187,6 +195,8 @@ def adjust_forecast_with_observations(
         "decay_hours": float(decay_hours),
         "recent_smp_bias": smp_bias,
         "recent_renewable_bias_mwh": renewable_bias,
+        "score_reference_rows": int(len(score_history)),
+        "score_reference_end": score_reference_end,
     }
     return result, metadata
 
