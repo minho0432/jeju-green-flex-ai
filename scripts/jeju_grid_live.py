@@ -93,10 +93,23 @@ def _xml_to_mapping(payload: str) -> dict[str, Any]:
         raise JejuGridApiError("제주 실시간 API 응답을 읽을 수 없습니다.") from error
 
     header_node = root.find(".//header")
+    common_error_node = root.find(".//cmmMsgHeader")
     body_node = root.find(".//body")
     header: dict[str, Any] = {}
     if header_node is not None:
         header = {child.tag: child.text for child in header_node}
+    elif common_error_node is not None:
+        # 공공데이터포털 게이트웨이 오류는 정상 API와 다른 XML 구조를 쓴다.
+        # 인증키 원문은 절대 오류문에 넣지 않고, 공식 오류코드와 사유만 옮긴다.
+        common_error = {child.tag: child.text for child in common_error_node}
+        header = {
+            "resultCode": common_error.get("returnReasonCode", "GATEWAY_ERROR"),
+            "resultMsg": (
+                common_error.get("returnAuthMsg")
+                or common_error.get("errMsg")
+                or "공공데이터포털 게이트웨이 오류"
+            ),
+        }
     items = []
     if body_node is not None:
         for item_node in body_node.findall(".//item"):
@@ -211,12 +224,40 @@ def grid_samples_to_hourly(samples: pd.DataFrame) -> pd.DataFrame:
 
 
 def latest_complete_hour(
-    hourly: pd.DataFrame, minimum_coverage: float = 0.9
+    hourly: pd.DataFrame, minimum_coverage: float = 1.0
 ) -> pd.Timestamp:
-    """현재 진행 중인 불완전한 시간은 제외하고 최신 실측 시각을 고른다."""
+    """5분 표본 12개가 모두 모인 최신 시간을 고른다.
+
+    11개만 더해도 한 시간 에너지가 약 8.3% 작게 계산될 수 있으므로 기본값은
+    100%다. 연구 목적으로 기준을 낮출 수는 있지만 앱에서는 기본값만 쓴다.
+    """
+    if not 0 < minimum_coverage <= 1:
+        raise ValueError("관측 완성도 기준은 0보다 크고 1 이하여야 합니다.")
     complete = hourly[hourly["coverage_ratio"] >= minimum_coverage]
     if complete.empty:
         raise JejuGridApiError(
             "5분 관측이 충분히 모인 완전한 시간대가 아직 없습니다."
         )
     return pd.Timestamp(complete["timestamp"].max())
+
+
+def observation_age_minutes(
+    samples: pd.DataFrame, now: pd.Timestamp | datetime | None = None
+) -> float:
+    """가장 최근 5분 실측이 현재보다 몇 분 전인지 계산한다."""
+    if samples.empty or "timestamp" not in samples.columns:
+        raise JejuGridApiError("최신성을 확인할 제주 실시간 관측값이 없습니다.")
+    timestamps = pd.to_datetime(samples["timestamp"], errors="coerce")
+    if timestamps.isna().all():
+        raise JejuGridApiError("제주 실시간 관측시각을 읽을 수 없습니다.")
+    latest = pd.Timestamp(timestamps.max())
+    current = (
+        pd.Timestamp.now(tz=KOREA_TIMEZONE)
+        if now is None
+        else pd.Timestamp(now)
+    )
+    if current.tzinfo is not None:
+        current = current.tz_convert(KOREA_TIMEZONE).tz_localize(None)
+    if latest.tzinfo is not None:
+        latest = latest.tz_convert(KOREA_TIMEZONE).tz_localize(None)
+    return max(0.0, float((current - latest).total_seconds() / 60))
