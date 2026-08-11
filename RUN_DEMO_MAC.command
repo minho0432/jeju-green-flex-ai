@@ -11,4 +11,5 @@ fi
 ".venv/bin/python" -m pip install -r requirements.txt
 ".venv/bin/python" scripts/validate_data.py
 ".venv/bin/python" scripts/train_models.py
+".venv/bin/python" scripts/validate_ai.py
 ".venv/bin/python" -m streamlit run app.py
