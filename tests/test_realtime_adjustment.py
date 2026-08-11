@@ -12,6 +12,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from realtime_adjustment import (  # noqa: E402
+    adjust_forecast_with_live_renewables,
     adjust_forecast_with_observations,
     five_minute_mw_to_hourly_mwh,
 )
@@ -116,6 +117,36 @@ class RealtimeAdjustmentTests(unittest.TestCase):
         )
         hourly = five_minute_mw_to_hourly_mwh(samples)
         self.assertAlmostEqual(hourly.loc[0, "coverage_ratio"], 11 / 12)
+
+    def test_official_renewables_adjust_only_renewable_forecast(self):
+        forecast = sample_forecast()
+        observations = pd.DataFrame(
+            {
+                "timestamp": forecast["timestamp"].iloc[:11],
+                "actual_renewable_mwh": (
+                    forecast["predicted_renewable_mwh"].iloc[:11] - 10
+                ),
+                "coverage_ratio": 1.0,
+            }
+        )
+        as_of = forecast["timestamp"].iloc[10]
+        adjusted, metadata = adjust_forecast_with_live_renewables(
+            forecast.drop(columns=["actual_smp", "actual_renewable_mwh"]),
+            sample_history(),
+            observations,
+            as_of=as_of,
+        )
+        future = adjusted[adjusted["timestamp"] > as_of]
+        self.assertTrue(
+            (future["predicted_smp"] == future["raw_predicted_smp"]).all()
+        )
+        self.assertTrue(
+            (
+                future["predicted_renewable_mwh"]
+                < future["raw_predicted_renewable_mwh"]
+            ).all()
+        )
+        self.assertEqual(metadata["renewable_observed_hours"], 11)
 
 
 if __name__ == "__main__":
