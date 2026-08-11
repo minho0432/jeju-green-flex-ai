@@ -24,6 +24,7 @@ from jeju_grid_live import (  # noqa: E402
     fetch_jeju_grid_live,
     grid_samples_to_hourly,
     latest_complete_hour,
+    observation_age_minutes,
 )
 from optimizer import (  # noqa: E402
     bonus_rate_for_score,
@@ -132,6 +133,7 @@ elif mode == "오늘 공식 실시간 관측":
         live_samples = load_official_grid(service_key)
         live_hourly = grid_samples_to_hourly(live_samples)
         observation_as_of = latest_complete_hour(live_hourly)
+        live_age_minutes = observation_age_minutes(live_samples)
         original_forecast = build_live_prediction(
             live_models, live_history, today_weather
         )
@@ -232,6 +234,13 @@ if has_observed:
             f"아직 지나지 않은 {planning_start_hour:02d}:00부터 충전계획을 다시 계산합니다."
         )
 
+if planning_start_hour >= departure_hour:
+    st.error(
+        "출발시각 전의 추천 가능한 시간이 없습니다. 출발시각을 늦추거나, "
+        "공식 실시간 모드에서는 내일 예보 실험으로 바꿔 주세요."
+    )
+    st.stop()
+
 try:
     plan = make_plan(
         forecast=forecast,
@@ -262,11 +271,19 @@ if has_actual:
 elif has_observed:
     if is_official_live:
         latest = live_samples.iloc[-1]
-        st.success(
-            f"**{mode_label} · 최근 자료 {latest['timestamp']:%Y-%m-%d %H:%M}** — "
-            "공식 태양광·풍력 실측으로 오늘 남은 예측과 충전계획을 보정했습니다. "
-            "API 호출은 일일 한도를 보호하기 위해 20분 동안 저장됩니다."
+        status_message = (
+            f"**{mode_label} · 최근 자료 {latest['timestamp']:%Y-%m-%d %H:%M} "
+            f"({live_age_minutes:.0f}분 전)** — 공식 태양광·풍력 실측으로 오늘 남은 "
+            "예측과 충전계획을 보정했습니다. API 호출은 일일 한도를 보호하기 위해 "
+            "20분 동안 저장됩니다."
         )
+        if live_age_minutes <= 35:
+            st.success(status_message)
+        else:
+            st.warning(
+                status_message
+                + " 최신 자료가 35분 넘게 지연되어 결과를 참고용으로만 보세요."
+            )
         live1, live2, live3, live4 = st.columns(4)
         live1.metric("현재 신재생 발전", f"{latest['renewable_total_mw']:.1f} MW")
         live2.metric("현재 태양광", f"{latest['solar_mw']:.1f} MW")
@@ -279,8 +296,17 @@ elif has_observed:
         )
         st.caption(
             "실시간 API에는 SMP 실측이 없으므로 SMP 예측은 고치지 않습니다. "
-            "화면의 MW는 순간 발전 세기이고, AI 보정에는 완전한 5분 표본을 합친 MWh만 사용합니다."
+            "화면의 MW는 순간 발전 세기이고, AI 보정에는 한 시간의 5분 표본 "
+            "12개가 모두 모인 경우에만 합산한 MWh를 사용합니다."
         )
+        complete_hours = int((live_hourly["coverage_ratio"] >= 1.0).sum())
+        with st.expander("공식 자료 연결 상태와 계산 기준"):
+            st.write(f"5분 관측 개수: **{len(live_samples):,}개**")
+            st.write(f"완료된 시간 수: **{complete_hours}시간**")
+            st.write(f"보정에 사용한 최신 완료시간: **{observation_as_of:%H:%M}**")
+            st.write(f"가장 최근 관측의 나이: **{live_age_minutes:.0f}분**")
+            st.write("완료 기준: **5분 관측 12개 중 12개(100%)**")
+            st.write("공식 출처: **한국전력거래소 제주계통운영정보 API**")
     else:
         st.info(
             f"**{mode_label} · {display_date} {observation_hour:02d}:00 기준** — "
