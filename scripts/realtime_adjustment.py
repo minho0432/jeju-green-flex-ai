@@ -201,6 +201,57 @@ def adjust_forecast_with_observations(
     return result, metadata
 
 
+def adjust_forecast_with_live_renewables(
+    forecast: pd.DataFrame,
+    history: pd.DataFrame,
+    hourly_observations: pd.DataFrame,
+    as_of: pd.Timestamp,
+    minimum_coverage: float = 0.9,
+    lookback_hours: int = 3,
+    decay_hours: float = 3.0,
+) -> tuple[pd.DataFrame, dict[str, float | int | str]]:
+    """공식 시간별 태양광+풍력 실측으로 오늘의 남은 예측을 보정한다.
+
+    제주 실시간 API에는 SMP가 없으므로 SMP 예측은 손대지 않는다. 관측이
+    충분히 모인 시간의 재생에너지 값만 기존 보정 함수에 전달한다.
+    """
+    required = {"timestamp", "actual_renewable_mwh", "coverage_ratio"}
+    missing = required - set(hourly_observations.columns)
+    if missing:
+        raise ValueError(f"공식 실측 보정에 필요한 열이 없습니다: {sorted(missing)}")
+    if not 0 < minimum_coverage <= 1:
+        raise ValueError("실측 완성도 기준은 0보다 크고 1 이하여야 합니다.")
+
+    observations = hourly_observations.copy()
+    observations["timestamp"] = pd.to_datetime(observations["timestamp"])
+    observations = observations[
+        (observations["timestamp"] <= pd.Timestamp(as_of))
+        & (observations["coverage_ratio"] >= minimum_coverage)
+    ][["timestamp", "actual_renewable_mwh"]]
+    if observations.empty:
+        raise ValueError("보정에 사용할 완전한 재생에너지 실측시간이 없습니다.")
+
+    prepared = forecast.copy()
+    prepared["timestamp"] = pd.to_datetime(prepared["timestamp"])
+    prepared = prepared.drop(
+        columns=["actual_smp", "actual_renewable_mwh", "actual_green_score"],
+        errors="ignore",
+    )
+    prepared = prepared.merge(observations, on="timestamp", how="left")
+    prepared["actual_smp"] = np.nan
+    adjusted, metadata = adjust_forecast_with_observations(
+        prepared,
+        history,
+        as_of=as_of,
+        lookback_hours=lookback_hours,
+        decay_hours=decay_hours,
+    )
+    adjusted["source_mode"] = "official_jeju_grid_live_adjustment"
+    metadata["renewable_observed_hours"] = int(len(observations))
+    metadata["api_actual_source"] = "KPX JejuSukub5mToday"
+    return adjusted, metadata
+
+
 def five_minute_mw_to_hourly_mwh(
     samples: pd.DataFrame,
     power_columns: tuple[str, ...] = ("solar_mw", "wind_mw"),
