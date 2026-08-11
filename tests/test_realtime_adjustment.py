@@ -20,6 +20,7 @@ from realtime_adjustment import (  # noqa: E402
 def sample_history() -> pd.DataFrame:
     return pd.DataFrame(
         {
+            "timestamp": pd.date_range("2025-12-01", periods=200, freq="h"),
             "smp": list(range(50, 250)),
             "renewable_mwh": list(range(200)),
         }
@@ -60,6 +61,10 @@ class RealtimeAdjustmentTests(unittest.TestCase):
         self.assertTrue(observed["observed_actual_smp"].notna().all())
         self.assertNotIn("actual_green_score", adjusted.columns)
         self.assertEqual(metadata["observed_hours"], 11)
+        self.assertLessEqual(
+            pd.Timestamp(metadata["score_reference_end"]),
+            pd.Timestamp("2025-12-10 10:00"),
+        )
 
     def test_recent_miss_changes_future_in_same_direction(self):
         adjusted, metadata = adjust_forecast_with_observations(
