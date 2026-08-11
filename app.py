@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -18,12 +19,21 @@ from live_forecast import (  # noqa: E402
     fetch_open_meteo_forecast,
     train_forecast_only_models,
 )
+from jeju_grid_live import (  # noqa: E402
+    JejuGridApiError,
+    fetch_jeju_grid_live,
+    grid_samples_to_hourly,
+    latest_complete_hour,
+)
 from optimizer import (  # noqa: E402
     bonus_rate_for_score,
     derive_point_policy,
     make_plan,
 )
-from realtime_adjustment import adjust_forecast_with_observations  # noqa: E402
+from realtime_adjustment import (  # noqa: E402
+    adjust_forecast_with_live_renewables,
+    adjust_forecast_with_observations,
+)
 
 
 FORECAST_PATH = ROOT / "outputs" / "demo_predictions.csv"
@@ -48,7 +58,18 @@ def load_forecast_only_models():
 
 @st.cache_data(ttl=1800)
 def load_tomorrow_weather():
-    return fetch_open_meteo_forecast()
+    return fetch_open_meteo_forecast(target_day_offset=1)
+
+
+@st.cache_data(ttl=1800)
+def load_today_weather():
+    return fetch_open_meteo_forecast(target_day_offset=0)
+
+
+@st.cache_data(ttl=1200, show_spinner=False)
+def load_official_grid(_service_key: str):
+    # 20분 캐시: 개발계정의 일 100회 한도를 넘기지 않도록 보호한다.
+    return fetch_jeju_grid_live(_service_key)
 
 
 @st.cache_data
@@ -56,17 +77,36 @@ def load_history():
     return pd.read_csv(HISTORY_PATH, parse_dates=["timestamp"])
 
 
+def get_data_go_kr_service_key() -> str:
+    """로컬 환경변수 또는 Streamlit 비밀설정에서 키를 읽는다."""
+    key = os.environ.get("DATA_GO_KR_SERVICE_KEY", "").strip()
+    if key:
+        return key
+    try:
+        return str(st.secrets.get("DATA_GO_KR_SERVICE_KEY", "")).strip()
+    except (FileNotFoundError, KeyError):
+        return ""
+
+
 with st.sidebar:
     st.header("0. 시연 모드")
     mode = st.radio(
         "어떤 결과를 볼까요?",
-        ["검증된 과거 재현", "실시간 보정 재현", "내일 예보 실험"],
+        [
+            "검증된 과거 재현",
+            "오늘 공식 실시간 관측",
+            "실시간 보정 재현",
+            "내일 예보 실험",
+        ],
         help=(
-            "과거 재현은 성능 검증, 실시간 보정 재현은 실측 도착에 따른 재계산, "
-            "내일 예보 실험은 실제 날씨예보를 사용합니다."
+            "과거 재현은 성능 검증, 오늘 공식 실시간 관측은 KPX 5분 자료, "
+            "실시간 보정 재현은 API 없이 흐름 검증, 내일 예보는 날씨예보 실험입니다."
         ),
     )
 
+is_official_live = False
+live_samples = None
+live_hourly = None
 if mode == "검증된 과거 재현":
     forecast = pd.read_csv(FORECAST_PATH, parse_dates=["timestamp"])
     has_actual = True
@@ -74,6 +114,45 @@ if mode == "검증된 과거 재현":
     realtime_metadata = None
     display_date = forecast["timestamp"].dt.strftime("%Y-%m-%d").iloc[0]
     mode_label = "검증 모드"
+elif mode == "오늘 공식 실시간 관측":
+    service_key = get_data_go_kr_service_key()
+    if not service_key:
+        st.error("공공데이터포털 인증키가 아직 설정되지 않았습니다.")
+        st.markdown(
+            "[한국전력거래소 제주계통운영정보 API 활용신청]"
+            "(https://www.data.go.kr/data/15158505/openapi.do) 후 "
+            "Streamlit Cloud의 **Settings → Secrets**에 아래 한 줄을 넣으세요."
+        )
+        st.code('DATA_GO_KR_SERVICE_KEY = "발급받은_일반인증키"', language="toml")
+        st.info("키가 없어도 다른 세 가지 모드는 정상 작동합니다.")
+        st.stop()
+    try:
+        live_models, live_history = load_forecast_only_models()
+        today_weather = load_today_weather()
+        live_samples = load_official_grid(service_key)
+        live_hourly = grid_samples_to_hourly(live_samples)
+        observation_as_of = latest_complete_hour(live_hourly)
+        original_forecast = build_live_prediction(
+            live_models, live_history, today_weather
+        )
+        forecast, realtime_metadata = adjust_forecast_with_live_renewables(
+            original_forecast,
+            live_history,
+            live_hourly,
+            as_of=observation_as_of,
+        )
+    except (JejuGridApiError, RuntimeError, ValueError, OSError) as error:
+        st.error(str(error))
+        st.info(
+            "API가 잠시 실패해도 `검증된 과거 재현` 또는 `실시간 보정 재현`은 사용할 수 있습니다."
+        )
+        st.stop()
+    observation_hour = int(observation_as_of.hour)
+    has_actual = False
+    has_observed = True
+    is_official_live = True
+    display_date = forecast["timestamp"].dt.strftime("%Y-%m-%d").iloc[0]
+    mode_label = "KPX 공식 5분 실측"
 elif mode == "실시간 보정 재현":
     original_forecast = pd.read_csv(FORECAST_PATH, parse_dates=["timestamp"])
     with st.sidebar:
@@ -181,22 +260,44 @@ if has_actual:
         f"**{mode_label} · {display_date}** — 이 날짜를 미래 하루처럼 가리고 예측한 뒤 실제값과 비교합니다."
     )
 elif has_observed:
-    st.info(
-        f"**{mode_label} · {display_date} {observation_hour:02d}:00 기준** — "
-        "선택 시각까지 도착한 과거 실측값만 이용해 이후 예측과 충전계획을 다시 계산합니다. "
-        "공식 제주 실시간 발전량 API가 연결된 상태는 아닙니다."
-    )
-    correction1, correction2 = st.columns(2)
-    correction1.metric(
-        "최근 재생에너지 예측 편차",
-        f"{realtime_metadata['recent_renewable_bias_mwh']:+.1f} MWh",
-        help="실제값-예측값입니다. 음수면 실제 발전량이 예측보다 적었다는 뜻입니다.",
-    )
-    correction2.metric(
-        "최근 SMP 예측 편차",
-        f"{realtime_metadata['recent_smp_bias']:+.1f} 원/kWh",
-        help="실제값-예측값입니다. SMP는 소비자 충전요금이 아닙니다.",
-    )
+    if is_official_live:
+        latest = live_samples.iloc[-1]
+        st.success(
+            f"**{mode_label} · 최근 자료 {latest['timestamp']:%Y-%m-%d %H:%M}** — "
+            "공식 태양광·풍력 실측으로 오늘 남은 예측과 충전계획을 보정했습니다. "
+            "API 호출은 일일 한도를 보호하기 위해 20분 동안 저장됩니다."
+        )
+        live1, live2, live3, live4 = st.columns(4)
+        live1.metric("현재 신재생 발전", f"{latest['renewable_total_mw']:.1f} MW")
+        live2.metric("현재 태양광", f"{latest['solar_mw']:.1f} MW")
+        live3.metric("현재 풍력", f"{latest['wind_mw']:.1f} MW")
+        live4.metric("현재 송전단수요", f"{latest['demand_transmission_mw']:.1f} MW")
+        st.metric(
+            "최근 재생에너지 예측 편차",
+            f"{realtime_metadata['recent_renewable_bias_mwh']:+.1f} MWh",
+            help="완료된 최근 3시간의 실제 태양광+풍력 MWh에서 AI 예측을 뺀 값입니다.",
+        )
+        st.caption(
+            "실시간 API에는 SMP 실측이 없으므로 SMP 예측은 고치지 않습니다. "
+            "화면의 MW는 순간 발전 세기이고, AI 보정에는 완전한 5분 표본을 합친 MWh만 사용합니다."
+        )
+    else:
+        st.info(
+            f"**{mode_label} · {display_date} {observation_hour:02d}:00 기준** — "
+            "선택 시각까지 도착한 과거 실측값만 이용해 이후 예측과 충전계획을 다시 계산합니다. "
+            "공식 API가 없어도 전체 흐름을 확인하는 재현 모드입니다."
+        )
+        correction1, correction2 = st.columns(2)
+        correction1.metric(
+            "최근 재생에너지 예측 편차",
+            f"{realtime_metadata['recent_renewable_bias_mwh']:+.1f} MWh",
+            help="실제값-예측값입니다. 음수면 실제 발전량이 예측보다 적었다는 뜻입니다.",
+        )
+        correction2.metric(
+            "최근 SMP 예측 편차",
+            f"{realtime_metadata['recent_smp_bias']:+.1f} 원/kWh",
+            help="실제값-예측값입니다. SMP는 소비자 충전요금이 아닙니다.",
+        )
 else:
     st.warning(
         f"**{mode_label} · {display_date}** — 실제 내일 날씨예보를 사용하지만 과거 기상예보 오차까지 검증한 모델은 아닙니다. "
@@ -341,24 +442,27 @@ if has_actual:
         st.plotly_chart(renewable_fig, use_container_width=True)
 elif has_observed:
     st.subheader("실측 도착 전후 예측 보정")
-    smp_tab, renewable_tab = st.tabs(["SMP 보정", "재생에너지 보정"])
-    with smp_tab:
-        smp_fig = go.Figure()
-        smp_fig.add_scatter(
-            x=forecast["timestamp"], y=forecast["raw_predicted_smp"],
-            name="보정 전 예측", line={"color": "#aab4bd", "width": 2, "dash": "dot"},
-        )
-        smp_fig.add_scatter(
-            x=forecast["timestamp"], y=forecast["predicted_smp"],
-            name="실측 반영 후 예측", line={"color": "#ed8b38", "width": 3},
-        )
-        smp_fig.add_scatter(
-            x=forecast["timestamp"], y=forecast["observed_actual_smp"],
-            name="현재까지 도착한 실측", mode="lines+markers",
-            line={"color": "#243447", "width": 2},
-        )
-        smp_fig.update_layout(height=350, yaxis_title="원/kWh", margin={"t": 20, "b": 30})
-        st.plotly_chart(smp_fig, use_container_width=True)
+    if not is_official_live:
+        smp_tab, renewable_tab = st.tabs(["SMP 보정", "재생에너지 보정"])
+        with smp_tab:
+            smp_fig = go.Figure()
+            smp_fig.add_scatter(
+                x=forecast["timestamp"], y=forecast["raw_predicted_smp"],
+                name="보정 전 예측", line={"color": "#aab4bd", "width": 2, "dash": "dot"},
+            )
+            smp_fig.add_scatter(
+                x=forecast["timestamp"], y=forecast["predicted_smp"],
+                name="실측 반영 후 예측", line={"color": "#ed8b38", "width": 3},
+            )
+            smp_fig.add_scatter(
+                x=forecast["timestamp"], y=forecast["observed_actual_smp"],
+                name="현재까지 도착한 실측", mode="lines+markers",
+                line={"color": "#243447", "width": 2},
+            )
+            smp_fig.update_layout(height=350, yaxis_title="원/kWh", margin={"t": 20, "b": 30})
+            st.plotly_chart(smp_fig, use_container_width=True)
+    else:
+        renewable_tab = st.container()
 
     with renewable_tab:
         renewable_fig = go.Figure()
@@ -378,7 +482,7 @@ elif has_observed:
         renewable_fig.update_layout(height=350, yaxis_title="MWh", margin={"t": 20, "b": 30})
         st.plotly_chart(renewable_fig, use_container_width=True)
     st.caption(
-        "최근 3시간의 실제-예측 오차를 사용합니다. 다음 한 시간은 크게 고치고, "
+        "완료된 최근 3시간의 실제-예측 오차를 사용합니다. 다음 한 시간은 크게 고치고, "
         "먼 시간일수록 보정 영향이 줄어듭니다. 미래 실제값은 계산에 사용하지 않습니다."
     )
 else:
@@ -507,12 +611,13 @@ with st.expander("AI 성능을 어떻게 검증했나요?"):
 with st.expander("현재 구현한 것과 아직 구현하지 않은 것"):
     st.markdown(
         """
-        **구현:** 과거 데이터 5회 검증, 내일 날씨예보 조회, 두 종류의 예측 모델, 과거 실측값을
-        시간 순서대로 받아 미래 예측과 충전시간을 다시 계산하는 실시간 보정 재현, 보수적 연속 충전시간,
+        **구현:** 과거 데이터 5회 검증, 오늘·내일 날씨예보 조회, 두 종류의 예측 모델,
+        KPX 제주 5분 태양광·풍력·수요·공급 실측 연결, 도착한 재생에너지 실측으로 남은 예측과
+        충전시간을 다시 계산하는 보정, API 장애용 과거 재현, 보수적 연속 충전시간,
         Green Point 정책, 목표 SOC 불가능 경고, 자동검사.
 
-        **미구현:** 충전사업자 결제 연동, 실제 포인트 지급, 실제 충전기 제어, 제주 실시간 계통상태,
-        공식 제주 태양광·풍력 실시간 API 연결, 다년도 모델, 공식 탄소감축·REC 인증.
+        **미구현:** 충전사업자 결제 연동, 실제 포인트 지급, 실제 충전기 제어,
+        실시간 SMP·HVDC·발전기 정비·출력제어 예고, 다년도 모델, 공식 탄소감축·REC 인증.
         """
     )
 
