@@ -19,6 +19,11 @@ from live_forecast import (  # noqa: E402
     fetch_open_meteo_forecast,
     train_forecast_only_models,
 )
+from ev_charger_live import (  # noqa: E402
+    EvChargerApiError,
+    charger_status_summary,
+    fetch_jeju_ev_chargers,
+)
 from jeju_grid_live import (  # noqa: E402
     JejuGridApiError,
     fetch_jeju_grid_live,
@@ -34,6 +39,11 @@ from optimizer import (  # noqa: E402
 from realtime_adjustment import (  # noqa: E402
     adjust_forecast_with_live_renewables,
     adjust_forecast_with_observations,
+)
+from weather_ensemble import (  # noqa: E402
+    WeatherEnsembleError,
+    apply_ensemble_uncertainty,
+    fetch_open_meteo_ensemble,
 )
 
 
@@ -67,10 +77,26 @@ def load_today_weather():
     return fetch_open_meteo_forecast(target_day_offset=0)
 
 
+@st.cache_data(ttl=1800)
+def load_tomorrow_ensemble():
+    return fetch_open_meteo_ensemble(target_day_offset=1)
+
+
+@st.cache_data(ttl=1800)
+def load_today_ensemble():
+    return fetch_open_meteo_ensemble(target_day_offset=0)
+
+
 @st.cache_data(ttl=1200, show_spinner=False)
 def load_official_grid(_service_key: str):
     # 20분 캐시: 개발계정의 일 100회 한도를 넘기지 않도록 보호한다.
     return fetch_jeju_grid_live(_service_key)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_jeju_chargers(_service_key: str):
+    # 충전기 상태는 10분 저장하고 사용자가 요청한 경우에만 호출한다.
+    return fetch_jeju_ev_chargers(_service_key)
 
 
 @st.cache_data
@@ -108,6 +134,8 @@ with st.sidebar:
 is_official_live = False
 live_samples = None
 live_hourly = None
+ensemble_metadata = None
+ensemble_error = None
 if mode == "검증된 과거 재현":
     forecast = pd.read_csv(FORECAST_PATH, parse_dates=["timestamp"])
     has_actual = True
@@ -137,6 +165,16 @@ elif mode == "오늘 공식 실시간 관측":
         original_forecast = build_live_prediction(
             live_models, live_history, today_weather
         )
+        try:
+            original_forecast, ensemble_metadata = apply_ensemble_uncertainty(
+                original_forecast,
+                live_models,
+                live_history,
+                load_today_ensemble(),
+            )
+        except (WeatherEnsembleError, RuntimeError, ValueError, OSError) as error:
+            # 부가 안전장치가 실패해도 KPX 실측 기반 핵심 기능은 계속 작동한다.
+            ensemble_error = str(error)
         forecast, realtime_metadata = adjust_forecast_with_live_renewables(
             original_forecast,
             live_history,
@@ -181,6 +219,15 @@ else:
         live_models, live_history = load_forecast_only_models()
         live_weather = load_tomorrow_weather()
         forecast = build_live_prediction(live_models, live_history, live_weather)
+        try:
+            forecast, ensemble_metadata = apply_ensemble_uncertainty(
+                forecast,
+                live_models,
+                live_history,
+                load_tomorrow_ensemble(),
+            )
+        except (WeatherEnsembleError, RuntimeError, ValueError, OSError) as error:
+            ensemble_error = str(error)
     except (RuntimeError, ValueError, OSError) as error:
         st.error(str(error))
         st.info("왼쪽에서 `검증된 과거 재현`을 선택하면 인터넷 없이도 시연할 수 있습니다.")
@@ -216,6 +263,13 @@ with st.sidebar:
         session_point_cap = st.number_input(
             "한 번 충전 크레딧 상한(P)", 100.0, 10000.0, 1500.0, 100.0
         )
+
+    st.header("3. 제주 충전소")
+    show_chargers = st.checkbox(
+        "제주 충전소 위치·상태 불러오기",
+        value=False,
+        help="한국환경공단 충전소 API의 별도 활용신청 승인이 필요합니다.",
+    )
 
 point_policy = derive_point_policy(monthly_budget_won, target_shifted_kwh)
 base_point_rate = point_policy["base_point_rate"]
@@ -329,6 +383,25 @@ else:
         f"**{mode_label} · {display_date}** — 실제 내일 날씨예보를 사용하지만 과거 기상예보 오차까지 검증한 모델은 아닙니다. "
         "발표의 성능 근거는 검증 모드 결과를 사용하세요."
     )
+
+if ensemble_metadata is not None:
+    ensemble1, ensemble2 = st.columns(2)
+    ensemble1.metric(
+        "날씨 시나리오 수",
+        f"{ensemble_metadata['member_count']}개",
+        help="초기조건을 조금씩 바꾼 여러 날씨예보를 각각 AI에 통과시켰습니다.",
+    )
+    ensemble2.metric(
+        "재생에너지 시나리오 평균 폭",
+        f"{ensemble_metadata['mean_renewable_p10_p90_range_mwh']:.1f} MWh",
+        help="여러 날씨 시나리오에서 나온 AI 예측의 10~90 백분위 차이입니다.",
+    )
+    st.caption(
+        "단일 예보만 믿지 않고 여러 날씨 가능성을 AI에 통과시켜 예상범위를 넓혔습니다. "
+        "시나리오 차이가 클수록 보수적 충전점수가 더 낮아질 수 있습니다."
+    )
+elif ensemble_error:
+    st.info(f"날씨 다중 시나리오를 사용할 수 없어 기존 보수범위를 유지합니다: {ensemble_error}")
 
 if not plan["feasible"]:
     st.warning(
@@ -634,13 +707,75 @@ with st.expander("AI 성능을 어떻게 검증했나요?"):
             "실제 기상예보 오차는 포함하지 않았습니다."
         )
 
+if show_chargers:
+    st.subheader("제주 충전소 실시간 위치·상태")
+    charger_service_key = get_data_go_kr_service_key()
+    if not charger_service_key:
+        st.warning(
+            "공공데이터포털 인증키가 없습니다. 한국환경공단 전기자동차 충전소 정보 API를 "
+            "활용신청한 뒤 기존 DATA_GO_KR_SERVICE_KEY를 설정하세요."
+        )
+    else:
+        try:
+            chargers = load_jeju_chargers(charger_service_key)
+            charger_summary = charger_status_summary(chargers)
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("조회 충전기", f"{charger_summary['total']:,}대")
+            c2.metric("충전대기", f"{charger_summary['available']:,}대")
+            c3.metric("충전중", f"{charger_summary['charging']:,}대")
+            c4.metric("이상·중지·점검", f"{charger_summary['unavailable']:,}대")
+            search_text = st.text_input("충전소명 또는 주소 검색", value="")
+            filtered = chargers
+            if search_text.strip():
+                mask = (
+                    chargers["station_name"].str.contains(
+                        search_text.strip(), case=False, na=False
+                    )
+                    | chargers["address"].str.contains(
+                        search_text.strip(), case=False, na=False
+                    )
+                )
+                filtered = chargers[mask]
+            st.dataframe(
+                filtered[
+                    [
+                        "station_name",
+                        "address",
+                        "status_label",
+                        "output_kw",
+                        "available_time",
+                        "operator_name",
+                        "status_updated_at",
+                    ]
+                ].head(100),
+                use_container_width=True,
+                hide_index=True,
+            )
+            map_data = filtered.dropna(subset=["latitude", "longitude"]).rename(
+                columns={"latitude": "lat", "longitude": "lon"}
+            )
+            if not map_data.empty:
+                st.map(map_data[["lat", "lon"]].head(300))
+            st.caption(
+                "실시간 상태는 운영기관 갱신 지연이 있을 수 있습니다. 실제 출발 전에는 "
+                "충전사업자 앱에서 최종 확인해야 합니다."
+            )
+        except (EvChargerApiError, ValueError, OSError) as error:
+            st.warning(str(error))
+            st.markdown(
+                "[한국환경공단 전기자동차 충전소 정보 API 활용신청]"
+                "(https://www.data.go.kr/tcs/dss/selectApiDataDetailView.do?publicDataPk=15076352)"
+            )
+
 with st.expander("현재 구현한 것과 아직 구현하지 않은 것"):
     st.markdown(
         """
-        **구현:** 과거 데이터 5회 검증, 오늘·내일 날씨예보 조회, 두 종류의 예측 모델,
+        **구현:** 과거 데이터 5회 검증, 오늘·내일 날씨예보 조회, 여러 날씨 시나리오 기반
+        불확실성 확대, 두 종류의 예측 모델,
         KPX 제주 5분 태양광·풍력·수요·공급 실측 연결, 도착한 재생에너지 실측으로 남은 예측과
         충전시간을 다시 계산하는 보정, API 장애용 과거 재현, 보수적 연속 충전시간,
-        Green Point 정책, 목표 SOC 불가능 경고, 자동검사.
+        한국환경공단 제주 충전소 위치·상태 선택 조회, Green Point 정책,
+        목표 SOC 불가능 경고, 자동검사.
 
         **미구현:** 충전사업자 결제 연동, 실제 포인트 지급, 실제 충전기 제어,
         실시간 SMP·HVDC·발전기 정비·출력제어 예고, 다년도 모델, 공식 탄소감축·REC 인증.
