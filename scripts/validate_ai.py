@@ -8,11 +8,13 @@ from pathlib import Path
 import pandas as pd
 
 from optimizer import derive_point_policy, make_plan
+from realtime_adjustment import adjust_forecast_with_observations
 
 
 ROOT = Path(__file__).resolve().parents[1]
 PREDICTION_PATH = ROOT / "outputs" / "demo_predictions.csv"
 METRICS_PATH = ROOT / "outputs" / "model_metrics.json"
+HISTORY_PATH = ROOT / "data" / "processed" / "train.csv"
 
 
 def validate() -> None:
@@ -89,6 +91,21 @@ def validate() -> None:
     if plan["ai"]["settled_total_points"] > 1500:
         raise ValueError("정산 포인트가 세션 상한을 넘었습니다.")
 
+    history = pd.read_csv(HISTORY_PATH, parse_dates=["timestamp"])
+    replay_as_of = forecast["timestamp"].dt.normalize().iloc[0] + pd.Timedelta(hours=10)
+    adjusted, adjustment_metadata = adjust_forecast_with_observations(
+        forecast,
+        history,
+        as_of=replay_as_of,
+    )
+    future = adjusted[adjusted["timestamp"] > replay_as_of]
+    if future[["actual_smp", "actual_renewable_mwh"]].notna().any().any():
+        raise ValueError("실시간 보정 재현에서 미래 실제값이 노출되었습니다.")
+    if "actual_green_score" in adjusted.columns:
+        raise ValueError("실시간 보정 재현이 미래 실제 점수로 정산할 위험이 있습니다.")
+    if adjustment_metadata["observed_hours"] != 11:
+        raise ValueError("실시간 보정에 사용한 관측시간 수가 예상과 다릅니다.")
+
     print("AI 결과 검사 통과")
     print(f"예측 행 수: {len(forecast)}")
     print(f"추천 충전량: {plan['ai']['energy_kwh']:.2f} kWh")
@@ -96,6 +113,10 @@ def validate() -> None:
     print(f"참여 보장 포인트: {plan['ai']['guaranteed_points']:,.0f}P")
     print(f"성과형 보너스: {plan['ai']['settled_bonus_points']:,.0f}P")
     print(f"재현 정산 포인트: {plan['ai']['settled_total_points']:,.0f}P")
+    print(
+        "실시간 보정 재현: "
+        f"{adjustment_metadata['observed_hours']}시간 실측 사용, 미래 실제값 차단"
+    )
     for target in ("smp", "renewable_mwh"):
         values = metrics["targets"][target]
         print(
