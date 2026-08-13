@@ -13,9 +13,9 @@ WEATHER_COLUMNS = [
     "shortwave_radiation",
 ]
 
-# 팀 제품정의: 친환경 기회를 핵심으로 두고 SMP는 보조 신호로만 사용한다.
-RENEWABLE_WEIGHT = 0.80
-MARKET_WEIGHT = 0.20
+# 기획서(Green Time JEJU): 공급여력 = 재생에너지 중심. SMP는 점수에 사용하지 않는다.
+RENEWABLE_WEIGHT = 1.00
+MARKET_WEIGHT = 0.00
 
 LAG_COLUMNS = [
     "smp_lag_24h",
