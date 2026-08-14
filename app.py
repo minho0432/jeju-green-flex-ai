@@ -1,4 +1,4 @@
-"""JEJU Green Time — 대시보드 시각화 포함."""
+"""JEJU Green Time — 대시보드 + KPX 실측 보정."""
 
 from __future__ import annotations
 
@@ -22,6 +22,13 @@ from live_forecast import (  # noqa: E402
     train_forecast_only_models,
 )
 from optimizer import make_plan  # noqa: E402
+from jeju_grid_live import (  # noqa: E402
+    JejuGridApiError,
+    fetch_jeju_grid_live,
+    grid_samples_to_hourly,
+    latest_complete_hour,
+)
+from realtime_adjustment import adjust_forecast_with_live_renewables  # noqa: E402
 
 FORECAST_PATH = ROOT / "outputs" / "demo_predictions.csv"
 KST = ZoneInfo("Asia/Seoul")
@@ -232,7 +239,7 @@ def chart_renewable_weather(plot_df, used):
             fig.add_vrect(
                 x0=row["timestamp"],
                 x1=row["timestamp"] + pd.Timedelta(hours=1),
-                fillcolor="rgba(15, 118, 110, 0.12)",
+                fillcolor="rgba(15, 118, 110, 0.12),
                 line_width=0,
             )
     fig.update_layout(
@@ -352,12 +359,40 @@ try:
         weather_note = "과거 검증 데이터"
     else:
         offset = 0 if day_choice == "오늘" else 1
+        adjustment_note = ""
         with st.spinner("날씨·예측 준비 중…"):
             weather = load_weather(offset, _bucket)
             models, history = load_models()
             forecast = ensure_scores(build_live_prediction(models, history, weather))
+
+            # 오늘 + 키 있음 → KPX 5분 실측으로 남은 시간 예측 보정
+            service_key = get_service_key()
+            if day_choice == "오늘" and service_key:
+                try:
+                    samples = fetch_jeju_grid_live(service_key)
+                    hourly_obs = grid_samples_to_hourly(samples)
+                    as_of = latest_complete_hour(hourly_obs)
+                    forecast, adj_meta = adjust_forecast_with_live_renewables(
+                        forecast,
+                        history,
+                        hourly_obs,
+                        as_of=as_of,
+                    )
+                    forecast = ensure_scores(forecast)
+                    obs_h = adj_meta.get("renewable_observed_hours", "?")
+                    adjustment_note = (
+                        f"KPX 실측 보정 · {obs_h}시간 반영 "
+                        f"(기준 {pd.Timestamp(as_of):%H시})"
+                    )
+                except (JejuGridApiError, ValueError, RuntimeError) as adj_err:
+                    adjustment_note = f"실측 보정 생략 ({adj_err})"
+                except Exception as adj_err:
+                    adjustment_note = f"실측 보정 생략 ({adj_err})"
+
         peak = weather.loc[weather["shortwave_radiation"].idxmax()]
         weather_note = f"제주 예보 · 일사 최대 {peak['timestamp']:%H시}"
+        if adjustment_note:
+            weather_note = f"{weather_note} · {adjustment_note}"
 except Exception as err:
     st.markdown(f'<div class="warning-box">날씨를 불러오지 못했어요.<br/><small>{err}</small></div>', unsafe_allow_html=True)
     st.stop()
