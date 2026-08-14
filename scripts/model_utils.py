@@ -73,7 +73,7 @@ LIVE_FEATURE_COLUMNS = [
 
 
 def ensure_demand_column(df: pd.DataFrame) -> pd.DataFrame:
-    """수요(MWh) 열이 없으면 시장 참여 발전 합계를 대리 수요로 둔다."""
+    """수요(MWh): 공식 열 우선, 없으면 solar+wind+lng+bio proxy. 실시간은 KPX currPwrTot."""
     out = df.copy()
     if "demand_mwh" in out.columns and out["demand_mwh"].notna().any():
         return out
