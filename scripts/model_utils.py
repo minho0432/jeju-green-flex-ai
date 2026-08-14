@@ -1,4 +1,4 @@
-"""AI 학습과 예측에서 공통으로 사용하는 시간·날씨 특성 생성 함수."""
+"""AI 학습과 예측에서 공통으로 사용하는 시간·날씨 특성·공급여력 점수."""
 
 from __future__ import annotations
 
@@ -13,9 +13,12 @@ WEATHER_COLUMNS = [
     "shortwave_radiation",
 ]
 
+# Green Score: 공급여력(재생/수요) 100%. SMP 미사용.
 RENEWABLE_WEIGHT = 1.00
 MARKET_WEIGHT = 0.00
-DEFAULT_RENEWABLE_AI_ALPHA = 1.0  # improve_renewable 검증 결과
+DEFAULT_RENEWABLE_AI_ALPHA = 1.0
+DEFAULT_DEMAND_AI_ALPHA = 1.0
+DEMAND_FLOOR_MWH = 50.0
 
 LAG_COLUMNS = [
     "smp_lag_24h",
@@ -24,6 +27,9 @@ LAG_COLUMNS = [
     "renewable_lag_24h",
     "renewable_lag_48h",
     "renewable_lag_168h",
+    "demand_lag_24h",
+    "demand_lag_48h",
+    "demand_lag_168h",
 ]
 
 FEATURE_COLUMNS = [
@@ -66,8 +72,30 @@ LIVE_FEATURE_COLUMNS = [
 ]
 
 
+def ensure_demand_column(df: pd.DataFrame) -> pd.DataFrame:
+    """수요(MWh) 열이 없으면 시장 참여 발전 합계를 대리 수요로 둔다."""
+    out = df.copy()
+    if "demand_mwh" in out.columns and out["demand_mwh"].notna().any():
+        return out
+    parts = [c for c in ("solar_mwh", "wind_mwh", "lng_mwh", "bio_mwh") if c in out.columns]
+    if not parts:
+        raise ValueError("demand_mwh를 만들 발전량 열이 없습니다.")
+    out["demand_mwh"] = out[parts].sum(axis=1)
+    return out
+
+
+def supply_margin(
+    renewable: pd.Series | np.ndarray,
+    demand: pd.Series | np.ndarray,
+    floor: float = DEMAND_FLOOR_MWH,
+) -> pd.Series:
+    """공급여력 ≈ 재생 / 수요 (수요 하한 적용)."""
+    r = pd.Series(np.asarray(renewable, dtype=float))
+    d = pd.Series(np.asarray(demand, dtype=float)).clip(lower=float(floor))
+    return (r / d).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+
 def add_lag_features(df: pd.DataFrame) -> pd.DataFrame:
-    """하루·이틀·일주일 전 같은 시각 값을 입력 열로 추가한다."""
     result = df.sort_values("timestamp").copy()
     if "smp" in result.columns:
         result["smp_lag_24h"] = result["smp"].shift(24)
@@ -77,6 +105,10 @@ def add_lag_features(df: pd.DataFrame) -> pd.DataFrame:
         result["renewable_lag_24h"] = result["renewable_mwh"].shift(24)
         result["renewable_lag_48h"] = result["renewable_mwh"].shift(48)
         result["renewable_lag_168h"] = result["renewable_mwh"].shift(168)
+    if "demand_mwh" in result.columns:
+        result["demand_lag_24h"] = result["demand_mwh"].shift(24)
+        result["demand_lag_48h"] = result["demand_mwh"].shift(48)
+        result["demand_lag_168h"] = result["demand_mwh"].shift(168)
     return result
 
 
@@ -110,12 +142,14 @@ def _weather_block(df: pd.DataFrame, features: pd.DataFrame) -> pd.DataFrame:
 
 
 def make_features(df: pd.DataFrame) -> pd.DataFrame:
-    timestamp = pd.to_datetime(df["timestamp"])
+    frame = ensure_demand_column(df)
+    frame = add_lag_features(frame)
+    timestamp = pd.to_datetime(frame["timestamp"])
     features = _calendar_block(timestamp)
-    features = _weather_block(df, features)
+    features = _weather_block(frame, features)
     for column in LAG_COLUMNS:
-        if column in df.columns:
-            features[column] = pd.to_numeric(df[column], errors="coerce")
+        if column in frame.columns:
+            features[column] = frame[column]
         else:
             features[column] = np.nan
     return features[FEATURE_COLUMNS]
@@ -167,3 +201,51 @@ def score_against_history(
     if not higher_is_better:
         scores = 100 - scores
     return pd.Series(np.clip(scores, 0, 100), index=values.index)
+
+
+def attach_supply_margin_scores(
+    result: pd.DataFrame,
+    history: pd.DataFrame,
+    renewable_col: str = "predicted_renewable_mwh",
+    demand_col: str = "predicted_demand_mwh",
+    renewable_lower_col: str = "predicted_renewable_lower",
+    demand_upper_col: str = "predicted_demand_upper",
+) -> pd.DataFrame:
+    """재생·수요 예측으로 공급여력 Green Score를 붙인다."""
+    out = result.copy()
+    hist = ensure_demand_column(history)
+    hist_margin = supply_margin(hist["renewable_mwh"], hist["demand_mwh"])
+
+    out["predicted_supply_margin"] = supply_margin(out[renewable_col], out[demand_col])
+    out["supply_margin_score"] = score_against_history(
+        out["predicted_supply_margin"], hist_margin, higher_is_better=True
+    ).round(1)
+
+    out["renewable_opportunity_score"] = score_against_history(
+        out[renewable_col], hist["renewable_mwh"], higher_is_better=True
+    ).round(1)
+    if "predicted_smp" in out.columns and "smp" in hist.columns:
+        out["price_opportunity_score"] = score_against_history(
+            out["predicted_smp"], hist["smp"], higher_is_better=False
+        ).round(1)
+    else:
+        out["price_opportunity_score"] = 50.0
+
+    out["green_score"] = out["supply_margin_score"]
+
+    if renewable_lower_col in out.columns and demand_upper_col in out.columns:
+        cons_margin = supply_margin(out[renewable_lower_col], out[demand_upper_col])
+        out["planning_score"] = score_against_history(
+            cons_margin, hist_margin, higher_is_better=True
+        ).round(1)
+        out["conservative_renewable_score"] = score_against_history(
+            out[renewable_lower_col], hist["renewable_mwh"], higher_is_better=True
+        ).round(1)
+    else:
+        out["planning_score"] = out["green_score"]
+        out["conservative_renewable_score"] = out["renewable_opportunity_score"]
+
+    out["forecast_risk_points"] = (
+        out["green_score"] - out["planning_score"]
+    ).clip(lower=0).round(1)
+    return out
