@@ -1,10 +1,12 @@
-"""JEJU Green Time — 제주 전기차 친환경 충전 안내."""
+"""JEJU Green Time — 제주 전기차 친환경 충전 안내 (자동 갱신)."""
 
 from __future__ import annotations
 
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -21,6 +23,8 @@ from live_forecast import (  # noqa: E402
 from optimizer import make_plan  # noqa: E402
 
 FORECAST_PATH = ROOT / "outputs" / "demo_predictions.csv"
+KST = ZoneInfo("Asia/Seoul")
+AUTO_REFRESH_MS = 10 * 60 * 1000
 
 st.set_page_config(
     page_title="JEJU Green Time",
@@ -28,6 +32,20 @@ st.set_page_config(
     layout="centered",
     initial_sidebar_state="collapsed",
 )
+
+_refresh_count = 0
+try:
+    from streamlit_autorefresh import st_autorefresh
+
+    _refresh_count = st_autorefresh(
+        interval=AUTO_REFRESH_MS,
+        key="jeju_green_time_auto",
+    )
+except Exception:
+    st.markdown(
+        f'<meta http-equiv="refresh" content="{AUTO_REFRESH_MS // 1000}">',
+        unsafe_allow_html=True,
+    )
 
 st.markdown(
     """
@@ -42,8 +60,7 @@ html, body, [class*="css"] {
 }
 header[data-testid="stHeader"] { background: transparent; }
 #MainMenu, footer { visibility: hidden; }
-
-.hero { text-align: center; padding: 0.5rem 0 1.25rem 0; }
+.hero { text-align: center; padding: 0.5rem 0 1rem 0; }
 .hero-badge {
   display: inline-block; background: #ecfdf5; color: #047857;
   font-size: 0.75rem; font-weight: 600; letter-spacing: 0.04em;
@@ -52,10 +69,8 @@ header[data-testid="stHeader"] { background: transparent; }
 .hero h1 {
   font-size: 1.65rem !important; font-weight: 700 !important;
   color: #0f172a !important; margin: 0 0 0.35rem 0 !important;
-  letter-spacing: -0.02em;
 }
 .hero p { color: #64748b; font-size: 0.95rem; margin: 0; line-height: 1.45; }
-
 .rec-card {
   background: linear-gradient(160deg, #0f766e 0%, #0d9488 45%, #14b8a6 100%);
   border-radius: 24px; padding: 1.5rem 1.35rem 1.35rem; color: #fff;
@@ -73,16 +88,11 @@ header[data-testid="stHeader"] { background: transparent; }
   background: rgba(255,255,255,0.18); border-radius: 999px;
   padding: 0.35rem 0.7rem; font-size: 0.78rem; font-weight: 600;
 }
-
 .section-title {
   font-size: 0.85rem; font-weight: 600; color: #475569; margin: 1.25rem 0 0.6rem 0;
 }
 div[data-testid="stMetric"] {
   background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 16px; padding: 0.85rem 1rem;
-}
-div[data-testid="stMetric"] label { color: #64748b !important; }
-div[data-testid="stMetric"] [data-testid="stMetricValue"] {
-  font-size: 1.25rem !important; color: #0f172a !important;
 }
 div[data-testid="stExpander"] {
   border: 1px solid #e2e8f0; border-radius: 16px; overflow: hidden; background: #fff;
@@ -93,7 +103,7 @@ div[data-testid="stExpander"] {
 }
 .status-bar {
   display: flex; flex-wrap: wrap; gap: 0.4rem;
-  justify-content: center; margin: 0 0 1rem 0;
+  justify-content: center; margin: 0 0 0.75rem 0;
 }
 .status-chip {
   font-size: 0.72rem; font-weight: 600;
@@ -101,6 +111,9 @@ div[data-testid="stExpander"] {
 }
 .status-on { background: #d1fae5; color: #065f46; }
 .status-off { background: #f1f5f9; color: #64748b; }
+.live-line {
+  text-align: center; color: #64748b; font-size: 0.78rem; margin-bottom: 0.75rem;
+}
 .footer-note {
   text-align: center; color: #94a3b8; font-size: 0.75rem;
   margin-top: 2rem; line-height: 1.5;
@@ -132,13 +145,17 @@ def get_service_key() -> str:
         return ""
 
 
+def now_kst() -> datetime:
+    return datetime.now(KST)
+
+
 @st.cache_resource
 def load_models():
     return train_forecast_only_models()
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
-def load_weather(day_offset: int):
+@st.cache_data(ttl=600, show_spinner=False)
+def load_weather(day_offset: int, _refresh_bucket: int):
     return fetch_open_meteo_forecast(target_day_offset=day_offset)
 
 
@@ -163,7 +180,9 @@ def ensure_scores(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-# ---- 연결 상태 (키 값은 표시하지 않음) ----
+_now = now_kst()
+_refresh_bucket = int(_now.timestamp() // 600) + int(_refresh_count)
+
 _kpx_ok = bool(get_service_key())
 st.markdown(
     f"""
@@ -172,12 +191,15 @@ st.markdown(
   <span class="status-chip {"status-on" if _kpx_ok else "status-off"}">
     {"제주 실측 연동됨" if _kpx_ok else "제주 실측 미연결"}
   </span>
+  <span class="status-chip status-on">10분마다 자동 갱신</span>
 </div>
 """,
     unsafe_allow_html=True,
 )
-if not _kpx_ok:
-    st.caption("실측 보정은 Secrets의 DATA_GO_KR_SERVICE_KEY가 있을 때 사용됩니다. 없어도 날씨 추천은 동작합니다.")
+st.markdown(
+    f'<p class="live-line">기준 시각 {_now.strftime("%Y-%m-%d %H:%M")} (KST) · 갱신 #{_refresh_count}</p>',
+    unsafe_allow_html=True,
+)
 
 day_choice = st.radio(
     "언제 기준인가요?",
@@ -185,7 +207,7 @@ day_choice = st.radio(
     horizontal=True,
     label_visibility="collapsed",
 )
-st.caption("오늘 · 내일은 제주 실제 날씨 예보를 사용합니다")
+st.caption("오늘·내일은 실예보 · 오늘은 지금 시각 이후만 추천합니다")
 
 with st.expander("내 차 정보 입력", expanded=True):
     c1, c2 = st.columns(2)
@@ -196,11 +218,24 @@ with st.expander("내 차 정보 입력", expanded=True):
     with c2:
         target_soc = st.slider("목표 배터리", 10, 100, 80, 5, format="%d%%")
         charger_kw = st.selectbox(
-            "충전기", [3.0, 7.0, 11.0, 50.0], index=1,
+            "충전기",
+            [3.0, 7.0, 11.0, 50.0],
+            index=1,
             format_func=lambda x: f"{x:g} kW",
         )
         departure_hour = st.slider("출발 시각", 1, 24, 20, format="%d시")
     efficiency_pct = st.slider("충전 효율", 70, 100, 90, format="%d%%")
+
+effective_start = int(start_hour)
+current_hour = _now.hour
+if day_choice == "오늘":
+    effective_start = max(effective_start, current_hour)
+    if effective_start >= departure_hour:
+        st.markdown(
+            '<div class="warning-box">오늘은 선택하신 출발 시각 전에 남은 충전 가능 시간이 거의 없어요. '
+            "출발 시각을 늘리거나 내일 모드를 선택해 보세요.</div>",
+            unsafe_allow_html=True,
+        )
 
 weather_note = ""
 try:
@@ -213,7 +248,7 @@ try:
     else:
         offset = 0 if day_choice == "오늘" else 1
         with st.spinner("날씨와 추천을 준비하는 중…"):
-            weather = load_weather(offset)
+            weather = load_weather(offset, _refresh_bucket)
             models, history = load_models()
             forecast = ensure_scores(build_live_prediction(models, history, weather))
         peak = weather.loc[weather["shortwave_radiation"].idxmax()]
@@ -233,7 +268,7 @@ try:
         battery_kwh=float(battery_kwh),
         charger_kw=float(charger_kw),
         efficiency=float(efficiency_pct) / 100.0,
-        start_hour=int(start_hour),
+        start_hour=int(effective_start),
         departure_hour=int(departure_hour),
         retail_price=250.0,
         continuous=True,
@@ -253,7 +288,6 @@ if used.empty:
     )
 else:
     start_ts = used["timestamp"].iloc[0]
-    end_ts = used["timestamp"].iloc[-1]
     avg_score = float(
         (used["scheduled_kwh"] * used[score_col]).sum() / used["scheduled_kwh"].sum()
     )
@@ -275,6 +309,10 @@ else:
 """,
         unsafe_allow_html=True,
     )
+    if day_choice == "오늘" and effective_start > start_hour:
+        st.caption(
+            f"지금 {current_hour}시 기준 · 지난 시간은 제외하고 {effective_start}시부터 잡았습니다."
+        )
 
     if not plan["feasible"]:
         st.markdown(
@@ -314,9 +352,17 @@ st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 st.caption("진한 초록 = 추천 충전 구간")
 
 m1, m2, m3 = st.columns(3)
-m1.metric("시작", f"{start_hour}시")
+m1.metric("시작(적용)", f"{effective_start}시")
 m2.metric("출발", f"{departure_hour}시")
 m3.metric("충전기", f"{charger_kw:g} kW")
+
+col_a, col_b = st.columns(2)
+with col_a:
+    if st.button("지금 바로 새로고침", use_container_width=True):
+        load_weather.clear()
+        st.rerun()
+with col_b:
+    st.caption("또는 최대 10분마다 자동으로 다시 계산합니다.")
 
 with st.expander("충전 구간 자세히"):
     if not used.empty:
@@ -332,15 +378,13 @@ with st.expander("충전 구간 자세히"):
     else:
         st.write("추천 구간이 없습니다.")
 
-with st.expander("이 서비스가 하는 일"):
+with st.expander("자동 갱신이 하는 일"):
     st.markdown(
         """
-제주 날씨 예보로 재생에너지가 많을 시간을 예측하고,
-배터리·출발 일정에 맞춰 **한 번에 이어서 충전하기 좋은 구간**을 고릅니다.
-
-- 오늘·내일: 실시간 기상 예보
-- 데모: 검증용 과거 하루
-- 추천은 참고용이며 실제 요금·포인트·충전기 제어와 무관합니다.
+- **10분마다** 페이지가 다시 돌면서 날씨 예보·추천을 다시 계산합니다.
+- **오늘** 모드에서는 **지금 시각 이후**만 충전 구간으로 잡습니다.
+- 날씨 캐시도 약 10분 단위로 갱신됩니다.
+- 브라우저에 앱 탭이 열려 있을 때 동작합니다.
 """
     )
 
