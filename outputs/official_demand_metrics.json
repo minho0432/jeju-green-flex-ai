@@ -1,10 +1,10 @@
 {
-  "demand_mae_ai": 56.74406848289837,
-  "demand_mae_baseline": 129.9757814670741,
-  "demand_improvement_pct": 56.34258333174711,
-  "green_time_top25_overlap_pct": 91.66666666666666,
-  "official_demand_hours_in_train": 2880,
+  "demand_mae_ai_oct_dec": 21.53,
+  "demand_mae_baseline_oct_dec": 104.33,
+  "demand_improvement_pct": 79.4,
+  "official_demand_hours_in_train": 8760,
   "train_hours_total": 8760,
-  "official_coverage_pct": 32.87671232876712,
-  "source": "KPX 제주 전력수급현황 계통수요 2023-09~2025-04 + proxy scaled by hour"
+  "official_coverage_pct": 100.0,
+  "demand_source": "KPX 제주 전력수급현황 계통수요.csv (2023-09-01 ~ 2026-06-30)",
+  "note": "full official system demand for all 2025 train hours; no proxy fill"
 }
