@@ -39,13 +39,27 @@ def build_forecast_only_model(target: str):
 
 
 def train_forecast_only_models() -> tuple[dict[str, object], pd.DataFrame]:
-    """배포 서버에서 한 번만 학습: SMP·재생·수요."""
+    """배포 서버: 저장된 LightGBM이 있으면 사용, 없으면 현장 학습."""
     history = pd.read_csv(DATA_PATH, parse_dates=["timestamp"]).sort_values("timestamp")
     history = ensure_demand_column(history)
     history = history.dropna(subset=WEATHER_COLUMNS).reset_index(drop=True)
     features = make_live_features(history)
     models: dict[str, object] = {}
+    model_dir = ROOT / "models"
+    try:
+        import joblib
+
+        re_path = model_dir / "renewable_live.joblib"
+        dem_path = model_dir / "demand_live.joblib"
+        if re_path.exists():
+            models["renewable_mwh"] = joblib.load(re_path)
+        if dem_path.exists():
+            models["demand_mwh"] = joblib.load(dem_path)
+    except Exception:
+        pass
     for target in ("smp", "renewable_mwh", "demand_mwh"):
+        if target in models:
+            continue
         model = build_forecast_only_model(target)
         model.fit(features, history[target])
         models[target] = model
