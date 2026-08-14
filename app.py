@@ -239,7 +239,7 @@ def chart_renewable_weather(plot_df, used):
             fig.add_vrect(
                 x0=row["timestamp"],
                 x1=row["timestamp"] + pd.Timedelta(hours=1),
-                fillcolor="rgba(15, 118, 110, 0.12),
+                fillcolor="rgba(15, 118, 110, 0.12)",
                 line_width=0,
             )
     fig.update_layout(
@@ -394,7 +394,10 @@ try:
         if adjustment_note:
             weather_note = f"{weather_note} · {adjustment_note}"
 except Exception as err:
-    st.markdown(f'<div class="warning-box">날씨를 불러오지 못했어요.<br/><small>{err}</small></div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="warning-box">날씨를 불러오지 못했어요.<br/><small>{err}</small></div>',
+        unsafe_allow_html=True,
+    )
     st.stop()
 
 try:
@@ -422,12 +425,19 @@ if score_col not in plot_df.columns:
     score_col = "green_score" if "green_score" in plot_df.columns else plot_df.columns[-1]
 
 if used.empty:
-    st.markdown('<div class="warning-box">이 일정으로는 추천 구간을 만들기 어려워요.</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="warning-box">이 일정으로는 추천 구간을 만들기 어려워요.</div>',
+        unsafe_allow_html=True,
+    )
 else:
     start_ts = used["timestamp"].iloc[0]
-    avg_score = float((used["scheduled_kwh"] * used[score_col]).sum() / used["scheduled_kwh"].sum())
+    avg_score = float(
+        (used["scheduled_kwh"] * used[score_col]).sum() / used["scheduled_kwh"].sum()
+    )
     hours = sorted(used["timestamp"].dt.hour.unique().tolist())
-    time_label = f"{hours[0]}시" if len(hours) == 1 else f"{hours[0]}시 – {hours[-1] + 1}시"
+    time_label = (
+        f"{hours[0]}시" if len(hours) == 1 else f"{hours[0]}시 – {hours[-1] + 1}시"
+    )
     st.markdown(
         f"""
 <div class="rec-card">
@@ -451,21 +461,37 @@ k3.metric("충전기", f"{charger_kw:g} kW")
 k4.metric("최고 점수", f"{float(plot_df[score_col].max()):.0f}")
 
 st.markdown('<p class="section-title">📊 Green 점수 · 추천 구간</p>', unsafe_allow_html=True)
-st.plotly_chart(chart_green_score(plot_df, used, score_col), use_container_width=True, config={"displayModeBar": False})
+st.plotly_chart(
+    chart_green_score(plot_df, used, score_col),
+    use_container_width=True,
+    config={"displayModeBar": False},
+)
 st.caption("진한 초록 = 추천 충전 시간 · 점선 = 70점 참고선")
 
 st.markdown('<p class="section-title">☀️ 예측 재생에너지 · 일사량</p>', unsafe_allow_html=True)
-st.plotly_chart(chart_renewable_weather(plot_df, used), use_container_width=True, config={"displayModeBar": False})
+st.plotly_chart(
+    chart_renewable_weather(plot_df, used),
+    use_container_width=True,
+    config={"displayModeBar": False},
+)
 st.caption("초록 밴드 = 예측 구간 · 배경 음영 = 추천 충전 시간")
 
 d1, d2 = st.columns(2)
 with d1:
     st.markdown('<p class="section-title">🔋 예상 배터리</p>', unsafe_allow_html=True)
-    st.plotly_chart(chart_soc_progress(current_soc, target_soc, plan["reached_soc"]), use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(
+        chart_soc_progress(current_soc, target_soc, plan["reached_soc"]),
+        use_container_width=True,
+        config={"displayModeBar": False},
+    )
 with d2:
     st.markdown('<p class="section-title">⚡ 시간별 충전량</p>', unsafe_allow_html=True)
     if not used.empty:
-        st.plotly_chart(chart_charge_schedule(used), use_container_width=True, config={"displayModeBar": False})
+        st.plotly_chart(
+            chart_charge_schedule(used),
+            use_container_width=True,
+            config={"displayModeBar": False},
+        )
     else:
         st.info("추천 구간이 없습니다.")
 
@@ -481,7 +507,13 @@ with st.expander("표로 보기"):
         if "predicted_renewable_mwh" in show.columns:
             cols.append("predicted_renewable_mwh")
         st.dataframe(
-            show[cols].rename(columns={"scheduled_kwh": "충전 kWh", score_col: "점수", "predicted_renewable_mwh": "예측 재생 MWh"}),
+            show[cols].rename(
+                columns={
+                    "scheduled_kwh": "충전 kWh",
+                    score_col: "점수",
+                    "predicted_renewable_mwh": "예측 재생 MWh",
+                }
+            ),
             hide_index=True,
             use_container_width=True,
         )
@@ -493,4 +525,7 @@ with st.expander("표로 보기"):
             show_cols.append(c)
     st.dataframe(view[show_cols], hide_index=True, use_container_width=True)
 
-st.markdown('<p class="footer-note">JEJU Green Time · 추천은 참고용입니다</p>', unsafe_allow_html=True)
+st.markdown(
+    '<p class="footer-note">JEJU Green Time · 추천은 참고용입니다</p>',
+    unsafe_allow_html=True,
+)
