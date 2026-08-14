@@ -99,8 +99,6 @@ def _xml_to_mapping(payload: str) -> dict[str, Any]:
     if header_node is not None:
         header = {child.tag: child.text for child in header_node}
     elif common_error_node is not None:
-        # 공공데이터포털 게이트웨이 오류는 정상 API와 다른 XML 구조를 쓴다.
-        # 인증키 원문은 절대 오류문에 넣지 않고, 공식 오류코드와 사유만 옮긴다.
         common_error = {child.tag: child.text for child in common_error_node}
         header = {
             "resultCode": common_error.get("returnReasonCode", "GATEWAY_ERROR"),
@@ -220,6 +218,9 @@ def grid_samples_to_hourly(samples: pd.DataFrame) -> pd.DataFrame:
         ]
         .mean()
     )
+    # 공식 계통 수요: 시간 평균 MW ≈ 그 시간 MWh (부하 에너지 근사)
+    # API 필드 currPwrTot → demand_generation_mw (이미 매핑됨)
+    context["actual_demand_mwh"] = context["demand_generation_mw"]
     return energy.merge(context, on="timestamp", how="left")
 
 
