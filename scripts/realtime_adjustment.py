@@ -144,6 +144,45 @@ def adjust_forecast_with_observations(
         0,
     )
 
+    # 공식 계통 수요 실측이 있으면 수요 예측도 같은 방식으로 보정
+    demand_bias = 0.0
+    result["demand_realtime_correction_mwh"] = 0.0
+    if (
+        "actual_demand_mwh" in result.columns
+        and "predicted_demand_mwh" in result.columns
+    ):
+        result["raw_predicted_demand_mwh"] = result["predicted_demand_mwh"]
+        result["observed_actual_demand_mwh"] = result["actual_demand_mwh"].where(
+            observed_mask
+        )
+        result["actual_demand_mwh"] = result["observed_actual_demand_mwh"]
+        demand_bias = _recent_weighted_bias(
+            observed,
+            "actual_demand_mwh",
+            "predicted_demand_mwh",
+            lookback_hours,
+        )
+        result.loc[future_mask, "demand_realtime_correction_mwh"] = (
+            demand_bias * decay.to_numpy()
+        )
+        result.loc[future_mask, "predicted_demand_mwh"] = np.maximum(
+            result.loc[future_mask, "raw_predicted_demand_mwh"]
+            + result.loc[future_mask, "demand_realtime_correction_mwh"],
+            0,
+        )
+        if "predicted_demand_lower" in result.columns:
+            result.loc[future_mask, "predicted_demand_lower"] = np.maximum(
+                result.loc[future_mask, "predicted_demand_lower"]
+                + result.loc[future_mask, "demand_realtime_correction_mwh"],
+                0,
+            )
+        if "predicted_demand_upper" in result.columns:
+            result.loc[future_mask, "predicted_demand_upper"] = np.maximum(
+                result.loc[future_mask, "predicted_demand_upper"]
+                + result.loc[future_mask, "demand_realtime_correction_mwh"],
+                0,
+            )
+
     score_history = history.copy()
     score_reference_end = "timestamp_not_available"
     if "timestamp" in score_history.columns:
@@ -164,6 +203,7 @@ def adjust_forecast_with_observations(
         "decay_hours": float(decay_hours),
         "recent_smp_bias": smp_bias,
         "recent_renewable_bias_mwh": renewable_bias,
+        "recent_demand_bias_mwh": demand_bias,
         "score_reference_rows": int(len(score_history)),
         "score_reference_end": score_reference_end,
     }
@@ -191,18 +231,29 @@ def adjust_forecast_with_live_renewables(
     observations = observations[
         (observations["timestamp"] <= pd.Timestamp(as_of))
         & (observations["coverage_ratio"] >= minimum_coverage)
-    ][["timestamp", "actual_renewable_mwh"]]
+    ].copy()
+    keep_cols = ["timestamp", "actual_renewable_mwh"]
+    if "actual_demand_mwh" in observations.columns:
+        keep_cols.append("actual_demand_mwh")
+    observations = observations[keep_cols]
     if observations.empty:
         raise ValueError("보정에 사용할 완전한 재생에너지 실측시간이 없습니다.")
 
     prepared = forecast.copy()
     prepared["timestamp"] = pd.to_datetime(prepared["timestamp"])
     prepared = prepared.drop(
-        columns=["actual_smp", "actual_renewable_mwh", "actual_green_score"],
+        columns=[
+            "actual_smp",
+            "actual_renewable_mwh",
+            "actual_demand_mwh",
+            "actual_green_score",
+        ],
         errors="ignore",
     )
     prepared = prepared.merge(observations, on="timestamp", how="left")
     prepared["actual_smp"] = np.nan
+    if "actual_demand_mwh" not in prepared.columns:
+        prepared["actual_demand_mwh"] = np.nan
     adjusted, metadata = adjust_forecast_with_observations(
         prepared,
         history,
@@ -212,7 +263,12 @@ def adjust_forecast_with_live_renewables(
     )
     adjusted["source_mode"] = "official_jeju_grid_live_adjustment"
     metadata["renewable_observed_hours"] = int(len(observations))
-    metadata["api_actual_source"] = "KPX JejuSukub5mToday"
+    metadata["demand_observed_hours"] = int(
+        observations["actual_demand_mwh"].notna().sum()
+        if "actual_demand_mwh" in observations.columns
+        else 0
+    )
+    metadata["api_actual_source"] = "KPX JejuSukub5mToday (renewable + currPwrTot demand)"
     return adjusted, metadata
 
 
