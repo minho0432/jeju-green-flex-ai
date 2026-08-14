@@ -1,10 +1,13 @@
 {
-  "demand_mae_ai_oct_dec": 21.53,
-  "demand_mae_baseline_oct_dec": 104.33,
-  "demand_improvement_pct": 79.4,
-  "official_demand_hours_in_train": 8760,
-  "train_hours_total": 8760,
+  "demand_mae_ai": 33.37,
+  "demand_mae_base": 62.42,
+  "demand_improvement_pct": 46.5,
+  "renewable_mae_ai": 13.83,
+  "renewable_mae_base": 18.84,
+  "green_time_margin_ai": 0.911,
+  "green_time_margin_base": 0.855,
   "official_coverage_pct": 100.0,
-  "demand_source": "KPX 제주 전력수급현황 계통수요.csv (2023-09-01 ~ 2026-06-30)",
-  "note": "full official system demand for all 2025 train hours; no proxy fill"
+  "demand_source": "KPX_system_demand_official_100pct_2025",
+  "models": ["models/demand_live.joblib", "models/demand_full.joblib", "models/renewable_live.joblib", "models/renewable_full.joblib"],
+  "note": "4-fold time-series CV on 2025 full year with official system demand"
 }
