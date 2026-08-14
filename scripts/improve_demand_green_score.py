@@ -26,7 +26,7 @@ def make_lgbm():
         from lightgbm import LGBMRegressor
 
         return LGBMRegressor(
-            n_estimators=300,
+            n_estimators=400,
             learning_rate=0.05,
             num_leaves=31,
             subsample=0.9,
@@ -112,8 +112,30 @@ def main():
 
     summary = {k: float(np.mean([r[k] for r in rows])) for k in rows[0] if k != "fold"}
     summary["folds"] = len(rows)
-    summary["demand_source"] = "proxy_generation_sum_solar_wind_lng_bio"
+    if "demand_mwh" in df.columns and df["demand_mwh"].notna().all():
+        summary["demand_source"] = "train_demand_mwh_column"
+    else:
+        summary["demand_source"] = "proxy_generation_sum_solar_wind_lng_bio"
     summary["green_score_definition"] = "percentile(renewable/demand) vs history"
+
+    model_dir = ROOT / "models"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        import joblib
+
+        final_d = make_lgbm()
+        final_d.fit(features, y_dem)
+        final_r = make_lgbm()
+        final_r.fit(features, y_re)
+        joblib.dump(final_d, model_dir / "demand_live.joblib")
+        joblib.dump(final_r, model_dir / "renewable_live.joblib")
+        summary["models_saved"] = [
+            "models/demand_live.joblib",
+            "models/renewable_live.joblib",
+        ]
+    except Exception as e:
+        summary["models_saved"] = []
+        summary["model_save_error"] = str(e)
 
     path = OUT / "demand_supply_margin_metrics.json"
     path.write_text(
