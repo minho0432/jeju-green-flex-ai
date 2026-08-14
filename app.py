@@ -91,6 +91,16 @@ div[data-testid="stExpander"] {
   background: #fff7ed; border: 1px solid #fed7aa; border-radius: 16px;
   padding: 0.9rem 1rem; color: #9a3412; font-size: 0.9rem; margin: 0.75rem 0;
 }
+.status-bar {
+  display: flex; flex-wrap: wrap; gap: 0.4rem;
+  justify-content: center; margin: 0 0 1rem 0;
+}
+.status-chip {
+  font-size: 0.72rem; font-weight: 600;
+  padding: 0.3rem 0.65rem; border-radius: 999px;
+}
+.status-on { background: #d1fae5; color: #065f46; }
+.status-off { background: #f1f5f9; color: #64748b; }
 .footer-note {
   text-align: center; color: #94a3b8; font-size: 0.75rem;
   margin-top: 2rem; line-height: 1.5;
@@ -152,6 +162,22 @@ def ensure_scores(df: pd.DataFrame) -> pd.DataFrame:
         out["predicted_smp_upper"] = out["predicted_smp"] * 1.1
     return out
 
+
+# ---- 연결 상태 (키 값은 표시하지 않음) ----
+_kpx_ok = bool(get_service_key())
+st.markdown(
+    f"""
+<div class="status-bar">
+  <span class="status-chip status-on">날씨 예보 연동됨</span>
+  <span class="status-chip {"status-on" if _kpx_ok else "status-off"}">
+    {"제주 실측 연동됨" if _kpx_ok else "제주 실측 미연결"}
+  </span>
+</div>
+""",
+    unsafe_allow_html=True,
+)
+if not _kpx_ok:
+    st.caption("실측 보정은 Secrets의 DATA_GO_KR_SERVICE_KEY가 있을 때 사용됩니다. 없어도 날씨 추천은 동작합니다.")
 
 day_choice = st.radio(
     "언제 기준인가요?",
@@ -232,10 +258,7 @@ else:
         (used["scheduled_kwh"] * used[score_col]).sum() / used["scheduled_kwh"].sum()
     )
     hours = sorted(used["timestamp"].dt.hour.unique().tolist())
-    if len(hours) == 1:
-        time_label = f"{hours[0]}시"
-    else:
-        time_label = f"{hours[0]}시 – {hours[-1] + 1}시"
+    time_label = f"{hours[0]}시" if len(hours) == 1 else f"{hours[0]}시 – {hours[-1] + 1}시"
 
     st.markdown(
         f"""
@@ -266,10 +289,8 @@ plot_df = forecast.sort_values("timestamp")
 if score_col not in plot_df.columns:
     score_col = "green_score" if "green_score" in plot_df.columns else plot_df.columns[-1]
 
-colors = []
 used_set = set(used["timestamp"]) if not used.empty else set()
-for _, row in plot_df.iterrows():
-    colors.append("#0f766e" if row["timestamp"] in used_set else "#ccfbf1")
+colors = ["#0f766e" if row["timestamp"] in used_set else "#ccfbf1" for _, row in plot_df.iterrows()]
 
 fig = go.Figure()
 fig.add_trace(
