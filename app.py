@@ -1,6 +1,7 @@
 """JEJU Green Time — 대시보드 + KPX 실측 보정."""
 
 from __future__ import annotations
+from scripts.time_utils import get_effective_start_hour
 
 import os
 import sys
@@ -339,15 +340,18 @@ with st.expander("내 차 · 일정", expanded=True):
         departure_hour = st.slider("출발 시각", 1, 24, 20, format="%d시")
     efficiency_pct = st.slider("충전 효율", 70, 100, 90, format="%d%%")
 
-effective_start = int(start_hour)
-current_hour = _now.hour
-if day_choice == "오늘":
-    effective_start = max(effective_start, current_hour)
-    if effective_start >= departure_hour:
-        st.markdown(
-            '<div class="warning-box">오늘 남은 충전 가능 시간이 거의 없어요. 출발 시각을 늘리거나 내일을 선택해 보세요.</div>',
-            unsafe_allow_html=True,
-        )
+effective_start = get_effective_start_hour(
+    selected_start_hour=int(start_hour),
+    now=_now,
+    is_today=day_choice == "오늘",
+)
+
+if day_choice == "오늘" and effective_start >= departure_hour:
+    st.markdown(
+        '<div class="warning-box">오늘 남은 충전 가능 시간이 거의 없어요. 출발 시각을 늘리거나 내일을 선택해 보세요.</div>',
+        unsafe_allow_html=True,
+    )
+    st.stop()
 
 weather_note = ""
 try:
