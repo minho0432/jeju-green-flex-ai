@@ -24,6 +24,7 @@ def sample_history() -> pd.DataFrame:
             "timestamp": pd.date_range("2025-12-01", periods=200, freq="h"),
             "smp": list(range(50, 250)),
             "renewable_mwh": list(range(200)),
+             "demand_mwh": [300.0] * 200,
         }
     )
 
