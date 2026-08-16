@@ -44,7 +44,14 @@ def _recalculate_scores(result: pd.DataFrame, history: pd.DataFrame) -> None:
     """보정 후 공급여력 Green Score를 다시 계산한다."""
     from model_utils import attach_supply_margin_scores, ensure_demand_column, month_hour_baseline
 
-    history = ensure_demand_column(history)
+    demand_parts = {"solar_mwh", "wind_mwh", "lng_mwh", "bio_mwh"} & set(history.columns)
+    if "demand_mwh" not in history.columns and not demand_parts:
+        # 과거 테스트·레거시 데모처럼 수요가 없는 자료는 일정 수요로 두어
+        # 기존의 재생에너지 백분위 점수와 같은 의미를 유지합니다.
+        history = history.copy()
+        history["demand_mwh"] = 1.0
+    else:
+        history = ensure_demand_column(history)
     if "predicted_demand_mwh" not in result.columns:
         result["predicted_demand_mwh"] = month_hour_baseline(
             history, "demand_mwh", result

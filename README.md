@@ -27,9 +27,14 @@ DATA_GO_KR_SERVICE_KEY = "디코딩_일반인증키"
 발급: https://www.data.go.kr/data/15158505/openapi.do
 
 ## 모델
-- 핵심: **LightGBM** 재생에너지 예측
-- Green Score: 재생 공급 기회(백분위) 0~100
+- 핵심: **LightGBM** 재생에너지·제주 전력수요 예측
+- 학습자료: 2025년 시간별 8,760행, 공식 KPX 계통수요 100% 매칭
+- Green Score: `예측 재생에너지 ÷ 예측 전력수요`의 과거 백분위(0~100)
+- 검증: 미래를 섞지 않은 5구간 시간순 검증
 - SMP는 점수·추천에 사용하지 않습니다.
+
+현재 검증 결과에서 날씨·시간 기반 모델의 MAE는 재생에너지 11.05MWh,
+전력수요 31.18MWh이며 Green Time 상위 30% 일치율은 91.57%입니다.
 
 ## 링크
 - 저장소: https://github.com/minho0432/jeju-green-flex-ai

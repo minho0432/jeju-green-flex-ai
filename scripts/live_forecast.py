@@ -51,10 +51,13 @@ def train_forecast_only_models() -> tuple[dict[str, object], pd.DataFrame]:
 
         re_path = model_dir / "renewable_live.joblib"
         dem_path = model_dir / "demand_live.joblib"
+        smp_path = model_dir / "smp_live.joblib"
         if re_path.exists():
             models["renewable_mwh"] = joblib.load(re_path)
         if dem_path.exists():
             models["demand_mwh"] = joblib.load(dem_path)
+        if smp_path.exists():
+            models["smp"] = joblib.load(smp_path)
     except Exception:
         pass
     for target in ("smp", "renewable_mwh", "demand_mwh"):

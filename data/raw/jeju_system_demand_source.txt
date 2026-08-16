@@ -2,4 +2,5 @@
 https://www.data.go.kr/data/15125113/fileData.do
 기간: 2023-09-01 ~ 2026-06-30, 단위 MW ≈ MWh/hour
 train.csv 2025년 전 구간 demand_mwh 공식 반영 완료 (8760/8760)
-재학습: demand/renewable LightGBM joblib 저장 완료
+시간 매핑: 1시=00:00, 24시=23:00
+재학습: demand/renewable LightGBM full/live 모델 저장 완료

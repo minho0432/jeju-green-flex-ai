@@ -22,6 +22,17 @@ from pathlib import Path
 import pandas as pd
 
 
+def _read_csv_with_korean_encoding(path: Path) -> pd.DataFrame:
+    """공공데이터 CSV에서 흔한 UTF-8/CP949 인코딩을 안전하게 처리합니다."""
+    errors: list[str] = []
+    for encoding in ("utf-8-sig", "cp949", "euc-kr"):
+        try:
+            return pd.read_csv(path, encoding=encoding)
+        except UnicodeDecodeError as error:
+            errors.append(f"{encoding}: {error}")
+    raise UnicodeError("CSV 인코딩을 확인할 수 없습니다. " + " | ".join(errors))
+
+
 def _find_date_col(columns: list[str]) -> str | None:
     for c in columns:
         cl = str(c).lower()
@@ -31,7 +42,7 @@ def _find_date_col(columns: list[str]) -> str | None:
 
 
 def load_demand_csv(path: Path) -> pd.DataFrame:
-    df = pd.read_csv(path, encoding="utf-8-sig")
+    df = _read_csv_with_korean_encoding(path)
     cols = list(df.columns)
 
     if "timestamp" in cols and (
@@ -53,7 +64,8 @@ def load_demand_csv(path: Path) -> pd.DataFrame:
             continue
         s = str(c).replace("시", "").replace("h", "").replace("H", "").strip()
         if s.isdigit() and 1 <= int(s) <= 24:
-            hour_cols.append((c, int(s) % 24))
+            # KPX 파일의 1시~24시는 각각 00:00~23:00 한 시간 구간입니다.
+            hour_cols.append((c, int(s) - 1))
 
     if date_col and hour_cols:
         rows = []
@@ -90,14 +102,25 @@ def main() -> None:
     train = train.drop(columns=["demand_mwh"], errors="ignore")
     merged = train.merge(demand, on="timestamp", how="left")
     matched = int(merged["demand_mwh"].notna().sum())
+    if matched != len(merged):
+        missing_examples = (
+            merged.loc[merged["demand_mwh"].isna(), "timestamp"]
+            .astype(str)
+            .head(5)
+            .tolist()
+        )
+        raise ValueError(
+            f"공식 수요가 {matched}/{len(merged)}행만 매칭되었습니다. "
+            f"누락 예시: {missing_examples}"
+        )
+    if (merged["demand_mwh"] <= 0).any():
+        raise ValueError("공식 수요에 0 이하 값이 있습니다.")
     args.out.parent.mkdir(parents=True, exist_ok=True)
     merged.to_csv(args.out, index=False)
     print(
         f"병합 완료: 수요 매칭 {matched}/{len(merged)}행 "
         f"(이전 demand 유효 {before}) → {args.out}"
     )
-    if matched == 0:
-        print("경고: 한 행도 매칭되지 않았습니다. 날짜/시간 형식을 확인하세요.")
 
 
 if __name__ == "__main__":

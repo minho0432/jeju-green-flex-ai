@@ -463,7 +463,7 @@ k4.metric("최고 점수", f"{float(plot_df[score_col].max()):.0f}")
 st.markdown('<p class="section-title">📊 Green 점수 · 추천 구간</p>', unsafe_allow_html=True)
 st.plotly_chart(
     chart_green_score(plot_df, used, score_col),
-    use_container_width=True,
+    width="stretch",
     config={"displayModeBar": False},
 )
 st.caption("진한 초록 = 추천 충전 시간 · 점선 = 70점 참고선")
@@ -471,7 +471,7 @@ st.caption("진한 초록 = 추천 충전 시간 · 점선 = 70점 참고선")
 st.markdown('<p class="section-title">☀️ 예측 재생에너지 · 일사량</p>', unsafe_allow_html=True)
 st.plotly_chart(
     chart_renewable_weather(plot_df, used),
-    use_container_width=True,
+    width="stretch",
     config={"displayModeBar": False},
 )
 st.caption("초록 밴드 = 예측 구간 · 배경 음영 = 추천 충전 시간")
@@ -481,7 +481,7 @@ with d1:
     st.markdown('<p class="section-title">🔋 예상 배터리</p>', unsafe_allow_html=True)
     st.plotly_chart(
         chart_soc_progress(current_soc, target_soc, plan["reached_soc"]),
-        use_container_width=True,
+        width="stretch",
         config={"displayModeBar": False},
     )
 with d2:
@@ -489,13 +489,13 @@ with d2:
     if not used.empty:
         st.plotly_chart(
             chart_charge_schedule(used),
-            use_container_width=True,
+            width="stretch",
             config={"displayModeBar": False},
         )
     else:
         st.info("추천 구간이 없습니다.")
 
-if st.button("지금 새로고침", use_container_width=True):
+if st.button("지금 새로고침", width="stretch"):
     load_weather.clear()
     st.rerun()
 
@@ -515,7 +515,7 @@ with st.expander("표로 보기"):
                 }
             ),
             hide_index=True,
-            use_container_width=True,
+            width="stretch",
         )
     view = plot_df.copy()
     view["시각"] = view["timestamp"].dt.strftime("%H:%M")
@@ -523,7 +523,7 @@ with st.expander("표로 보기"):
     for c in ("predicted_renewable_mwh", "shortwave_radiation", "temperature_2m"):
         if c in view.columns:
             show_cols.append(c)
-    st.dataframe(view[show_cols], hide_index=True, use_container_width=True)
+    st.dataframe(view[show_cols], hide_index=True, width="stretch")
 
 st.markdown(
     '<p class="footer-note">JEJU Green Time · 추천은 참고용입니다</p>',

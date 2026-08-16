@@ -13,6 +13,7 @@ REQUIRED = [
     "solar_mwh",
     "wind_mwh",
     "renewable_mwh",
+    "demand_mwh",
     "temperature_2m",
     "relative_humidity_2m",
     "wind_speed_10m",
@@ -38,6 +39,11 @@ def validate() -> None:
     if not calculated.equals(stored):
         raise AssertionError("renewable_mwh 계산이 맞지 않습니다.")
 
+    if (df["demand_mwh"] <= 0).any():
+        raise AssertionError("demand_mwh에 0 이하 값이 있습니다.")
+    if not df["demand_mwh"].between(300, 2_000).all():
+        raise AssertionError("demand_mwh가 제주 계통수요의 점검 범위(300~2,000MW)를 벗어났습니다.")
+
     expected_interval = df["timestamp"].diff().dropna().value_counts().index[0]
     if expected_interval != pd.Timedelta(hours=1):
         raise AssertionError(f"대표 시간 간격이 1시간이 아닙니다: {expected_interval}")
@@ -46,6 +52,7 @@ def validate() -> None:
     print(f"기간: {df['timestamp'].min()} ~ {df['timestamp'].max()}")
     print(f"행 수: {len(df):,}")
     print(f"열 수: {len(df.columns)}")
+    print(f"공식 수요 유효 행: {df['demand_mwh'].notna().sum():,}/{len(df):,}")
     print(f"SMP 범위: {df['smp'].min():.2f} ~ {df['smp'].max():.2f} 원/kWh")
 
 

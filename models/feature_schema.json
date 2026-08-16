@@ -1,4 +1,10 @@
 {
-  "live_features": ["hour", "dayofweek", "month", "is_weekend", "temperature_2m", "relative_humidity_2m", "wind_speed_10m", "shortwave_radiation"],
-  "note": "exact columns may include extra calendar/weather features from make_live_features"
+  "live_features": [
+    "hour", "day_of_week", "month", "day_of_year", "is_weekend", "is_daytime",
+    "hour_sin", "hour_cos", "day_sin", "day_cos", "month_sin", "month_cos",
+    "temperature_2m", "relative_humidity_2m", "wind_speed_10m", "shortwave_radiation",
+    "radiation_x_wind", "radiation_sq", "wind_sq"
+  ],
+  "targets": ["renewable_mwh", "demand_mwh"],
+  "score": "percentile(predicted_renewable_mwh / predicted_demand_mwh)"
 }
