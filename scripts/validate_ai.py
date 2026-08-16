@@ -23,12 +23,12 @@ def validate() -> None:
 
     forecast = pd.read_csv(PREDICTION_PATH, parse_dates=["timestamp"])
     required_columns = {
-        "predicted_smp",
-        "predicted_smp_lower",
-        "predicted_smp_upper",
         "predicted_renewable_mwh",
         "predicted_renewable_lower",
         "predicted_renewable_upper",
+        "predicted_demand_mwh",
+        "predicted_demand_lower",
+        "predicted_demand_upper",
         "green_score",
         "planning_score",
         "forecast_risk_points",
@@ -49,17 +49,13 @@ def validate() -> None:
         raise ValueError("보수적 점수가 중심 예측 점수보다 높은 시간이 있습니다.")
 
     metrics = json.loads(METRICS_PATH.read_text(encoding="utf-8"))
-    for target in ("smp", "renewable_mwh", "demand_mwh"):
+    for target in ("renewable_mwh", "demand_mwh"):
         if target not in metrics["targets"]:
             raise ValueError(f"{target} 평가 결과가 없습니다.")
         if target not in metrics.get("forecast_only_targets", {}):
             raise ValueError(f"{target} 내일 예보용 모델 평가 결과가 없습니다.")
-    score_weights = metrics.get("score_weights", {})
-    if (
-        score_weights.get("renewable_supply_margin") != 1.0
-        or score_weights.get("market_smp") != 0.0
-    ):
-        raise ValueError("Green Score는 재생에너지/전력수요 공급여력 100%여야 합니다.")
+    if "예측 재생에너지/예측 수요" not in metrics.get("score_definition", ""):
+        raise ValueError("Green Score는 재생에너지/전력수요 공급여력 기준이어야 합니다.")
 
     point_policy = derive_point_policy(3_000_000, 100_000)
     if point_policy["maximum_total_rate"] != 30:
@@ -102,7 +98,11 @@ def validate() -> None:
         as_of=replay_as_of,
     )
     future = adjusted[adjusted["timestamp"] > replay_as_of]
-    if future[["actual_smp", "actual_renewable_mwh"]].notna().any().any():
+    actual_columns = [
+        column for column in ("actual_renewable_mwh", "actual_demand_mwh")
+        if column in future.columns
+    ]
+    if future[actual_columns].notna().any().any():
         raise ValueError("실시간 보정 재현에서 미래 실제값이 노출되었습니다.")
     if "actual_green_score" in adjusted.columns:
         raise ValueError("실시간 보정 재현이 미래 실제 점수로 정산할 위험이 있습니다.")
@@ -122,7 +122,7 @@ def validate() -> None:
         "실시간 보정 재현: "
         f"{adjustment_metadata['observed_hours']}시간 실측 사용, 미래 실제값 차단"
     )
-    for target in ("smp", "renewable_mwh", "demand_mwh"):
+    for target in ("renewable_mwh", "demand_mwh"):
         values = metrics["forecast_only_targets"][target]
         print(
             f"{target}: 내일 예보형 MAE {values['ai']['mae']}, "

@@ -23,9 +23,8 @@ def sample_forecast() -> pd.DataFrame:
     return pd.DataFrame(
         {
             "timestamp": timestamps,
-            "predicted_smp": [200 - hour * 3 for hour in range(24)],
-            "predicted_smp_upper": [220 - hour * 3 for hour in range(24)],
             "predicted_renewable_mwh": [hour * 5 for hour in range(24)],
+            "predicted_demand_mwh": [600 + hour for hour in range(24)],
             "green_score": [min(hour * 4, 100) for hour in range(24)],
             "planning_score": [min(hour * 3, 100) for hour in range(24)],
             "actual_green_score": [min(hour * 4, 100) for hour in range(24)],
@@ -66,6 +65,10 @@ class OptimizerTests(unittest.TestCase):
         used = plan["ai_schedule"][plan["ai_schedule"]["scheduled_kwh"] > 0]
         differences = used["timestamp"].sort_values().diff().dropna()
         self.assertTrue((differences == pd.Timedelta(hours=1)).all())
+
+    def test_green_score_columns_are_sufficient_for_recommendation(self):
+        plan = self.make_default_plan()
+        self.assertGreater(plan["ai"]["energy_kwh"], 0)
 
     def test_guaranteed_points_survive_forecast_miss(self):
         forecast = sample_forecast()

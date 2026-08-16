@@ -1,4 +1,4 @@
-"""발전량, SMP, 날씨 데이터를 한 시간 단위 학습 데이터로 합친다."""
+"""발전량과 날씨 데이터를 한 시간 단위 학습 데이터로 합친다."""
 
 from __future__ import annotations
 
@@ -72,13 +72,11 @@ def prepare() -> pd.DataFrame:
     bio = generation_to_long(
         GEN_DIR / "25년 제주지역 바이오중유 시간대별 발전량.csv", "bio_mwh"
     )
-    smp = pd.read_csv(RAW / "smp_jeju_2025.csv", parse_dates=["timestamp"])
     weather = read_weather()
 
     df = solar.merge(wind, on="timestamp", how="inner")
     df = df.merge(lng, on="timestamp", how="inner")
     df = df.merge(bio, on="timestamp", how="inner")
-    df = df.merge(smp, on="timestamp", how="inner")
     df = df.merge(weather, on="timestamp", how="inner")
     df["renewable_mwh"] = df["solar_mwh"] + df["wind_mwh"]
     df = df.drop_duplicates("timestamp").sort_values("timestamp").reset_index(drop=True)

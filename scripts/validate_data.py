@@ -57,12 +57,6 @@ def validate() -> None:
     year_counts = df.groupby(df["timestamp"].dt.year).size().to_dict()
     if year_counts != {2023: 8_015, 2024: 8_784, 2025: 8_760}:
         raise AssertionError(f"연도별 행 수가 예상과 다릅니다: {year_counts}")
-    if "smp" in df.columns:
-        smp = df["smp"].dropna()
-        if len(smp) != 8_760:
-            raise AssertionError(f"SMP 유효 행은 2025년 8,760개여야 합니다: {len(smp):,}")
-        print(f"SMP 유효 행: {len(smp):,}/{len(df):,} (Green Score에는 미사용)")
-        print(f"SMP 범위: {smp.min():.2f} ~ {smp.max():.2f} 원/kWh")
 
 
 if __name__ == "__main__":

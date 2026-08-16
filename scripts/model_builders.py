@@ -14,14 +14,6 @@ MODEL_CANDIDATES = (
 
 
 def build_model(target: str, candidate: str | None = None):
-    if target == "smp":
-        return ExtraTreesRegressor(
-            n_estimators=200,
-            min_samples_leaf=10,
-            max_features=0.8,
-            n_jobs=-1,
-            random_state=42,
-        )
     candidate = candidate or "lightgbm_balanced"
     if candidate == "lightgbm_balanced":
         return lgb.LGBMRegressor(

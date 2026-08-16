@@ -10,22 +10,17 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from model_utils import (
-    MARKET_WEIGHT,
-    RENEWABLE_WEIGHT,
-    score_against_history,
-)
+from model_utils import attach_supply_margin_scores
 
 
 REQUIRED_FORECAST_COLUMNS = {
     "timestamp",
-    "predicted_smp",
-    "predicted_smp_lower",
-    "predicted_smp_upper",
     "predicted_renewable_mwh",
     "predicted_renewable_lower",
     "predicted_renewable_upper",
-    "actual_smp",
+    "predicted_demand_mwh",
+    "predicted_demand_lower",
+    "predicted_demand_upper",
     "actual_renewable_mwh",
 }
 
@@ -52,34 +47,17 @@ def _recent_weighted_bias(
 
 def _recalculate_scores(result: pd.DataFrame, history: pd.DataFrame) -> None:
     """보정된 예측값과 예상범위로 Green Score를 다시 계산한다."""
-    result["price_opportunity_score"] = score_against_history(
-        result["predicted_smp"], history["smp"], higher_is_better=False
-    ).round(1)
-    result["renewable_opportunity_score"] = score_against_history(
-        result["predicted_renewable_mwh"],
-        history["renewable_mwh"],
-        higher_is_better=True,
-    ).round(1)
-    result["green_score"] = (
-        MARKET_WEIGHT * result["price_opportunity_score"]
-        + RENEWABLE_WEIGHT * result["renewable_opportunity_score"]
-    ).round(1)
-
-    result["conservative_price_score"] = score_against_history(
-        result["predicted_smp_upper"], history["smp"], higher_is_better=False
-    ).round(1)
-    result["conservative_renewable_score"] = score_against_history(
-        result["predicted_renewable_lower"],
-        history["renewable_mwh"],
-        higher_is_better=True,
-    ).round(1)
-    result["planning_score"] = (
-        MARKET_WEIGHT * result["conservative_price_score"]
-        + RENEWABLE_WEIGHT * result["conservative_renewable_score"]
-    ).round(1)
-    result["forecast_risk_points"] = (
-        result["green_score"] - result["planning_score"]
-    ).clip(lower=0).round(1)
+    scored = attach_supply_margin_scores(result, history)
+    for column in (
+        "predicted_supply_margin",
+        "supply_margin_score",
+        "renewable_opportunity_score",
+        "green_score",
+        "planning_score",
+        "conservative_renewable_score",
+        "forecast_risk_points",
+    ):
+        result[column] = scored[column]
 
 
 def adjust_forecast_with_observations(
@@ -115,20 +93,20 @@ def adjust_forecast_with_observations(
     if observed.empty:
         raise ValueError("보정에 사용할 도착 실측값이 없습니다.")
 
-    result["raw_predicted_smp"] = result["predicted_smp"]
     result["raw_predicted_renewable_mwh"] = result["predicted_renewable_mwh"]
-    result["observed_actual_smp"] = result["actual_smp"].where(observed_mask)
     result["observed_actual_renewable_mwh"] = result[
         "actual_renewable_mwh"
     ].where(observed_mask)
+    if "actual_demand_mwh" in result.columns:
+        result["observed_actual_demand_mwh"] = result["actual_demand_mwh"].where(
+            observed_mask
+        )
     # 미래 실제값이 화면·최적화·정산으로 새지 않도록 원래 열도 가린다.
-    result["actual_smp"] = result["observed_actual_smp"]
     result["actual_renewable_mwh"] = result["observed_actual_renewable_mwh"]
+    if "observed_actual_demand_mwh" in result.columns:
+        result["actual_demand_mwh"] = result["observed_actual_demand_mwh"]
     result = result.drop(columns=["actual_green_score"], errors="ignore")
 
-    smp_bias = _recent_weighted_bias(
-        observed, "actual_smp", "predicted_smp", lookback_hours
-    )
     renewable_bias = _recent_weighted_bias(
         observed,
         "actual_renewable_mwh",
@@ -140,17 +118,11 @@ def adjust_forecast_with_observations(
         (result.loc[future_mask, "timestamp"] - as_of).dt.total_seconds() / 3600
     )
     decay = np.exp(-(lead_hours - 1).clip(lower=0) / decay_hours)
-    result["smp_realtime_correction"] = 0.0
     result["renewable_realtime_correction_mwh"] = 0.0
-    result.loc[future_mask, "smp_realtime_correction"] = smp_bias * decay.to_numpy()
     result.loc[future_mask, "renewable_realtime_correction_mwh"] = (
         renewable_bias * decay.to_numpy()
     )
 
-    result.loc[future_mask, "predicted_smp"] = (
-        result.loc[future_mask, "raw_predicted_smp"]
-        + result.loc[future_mask, "smp_realtime_correction"]
-    )
     result.loc[future_mask, "predicted_renewable_mwh"] = np.maximum(
         result.loc[future_mask, "raw_predicted_renewable_mwh"]
         + result.loc[future_mask, "renewable_realtime_correction_mwh"],
@@ -158,12 +130,6 @@ def adjust_forecast_with_observations(
     )
 
     # 기존 예상범위의 폭은 유지하고 중심만 같은 방향으로 이동한다.
-    result.loc[future_mask, "predicted_smp_lower"] += result.loc[
-        future_mask, "smp_realtime_correction"
-    ]
-    result.loc[future_mask, "predicted_smp_upper"] += result.loc[
-        future_mask, "smp_realtime_correction"
-    ]
     result.loc[future_mask, "predicted_renewable_lower"] = np.maximum(
         result.loc[future_mask, "predicted_renewable_lower"]
         + result.loc[future_mask, "renewable_realtime_correction_mwh"],
@@ -193,7 +159,6 @@ def adjust_forecast_with_observations(
         "future_hours": int(future_mask.sum()),
         "lookback_hours": int(lookback_hours),
         "decay_hours": float(decay_hours),
-        "recent_smp_bias": smp_bias,
         "recent_renewable_bias_mwh": renewable_bias,
         "score_reference_rows": int(len(score_history)),
         "score_reference_end": score_reference_end,
@@ -212,8 +177,7 @@ def adjust_forecast_with_live_renewables(
 ) -> tuple[pd.DataFrame, dict[str, float | int | str]]:
     """공식 시간별 태양광+풍력 실측으로 오늘의 남은 예측을 보정한다.
 
-    제주 실시간 API에는 SMP가 없으므로 SMP 예측은 손대지 않는다. 관측이
-    충분히 모인 시간의 재생에너지 값만 기존 보정 함수에 전달한다.
+    관측이 충분히 모인 시간의 재생에너지 값만 기존 보정 함수에 전달한다.
     """
     required = {"timestamp", "actual_renewable_mwh", "coverage_ratio"}
     missing = required - set(hourly_observations.columns)
@@ -234,11 +198,10 @@ def adjust_forecast_with_live_renewables(
     prepared = forecast.copy()
     prepared["timestamp"] = pd.to_datetime(prepared["timestamp"])
     prepared = prepared.drop(
-        columns=["actual_smp", "actual_renewable_mwh", "actual_green_score"],
+        columns=["actual_renewable_mwh", "actual_demand_mwh", "actual_green_score"],
         errors="ignore",
     )
     prepared = prepared.merge(observations, on="timestamp", how="left")
-    prepared["actual_smp"] = np.nan
     adjusted, metadata = adjust_forecast_with_observations(
         prepared,
         history,

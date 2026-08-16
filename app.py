@@ -295,7 +295,6 @@ elif has_observed:
             help="완료된 최근 3시간의 실제 태양광+풍력 MWh에서 AI 예측을 뺀 값입니다.",
         )
         st.caption(
-            "실시간 API에는 SMP 실측이 없으므로 SMP 예측은 고치지 않습니다. "
             "화면의 MW는 순간 발전 세기이고, AI 보정에는 한 시간의 5분 표본 "
             "12개가 모두 모인 경우에만 합산한 MWh를 사용합니다."
         )
@@ -313,16 +312,10 @@ elif has_observed:
             "선택 시각까지 도착한 과거 실측값만 이용해 이후 예측과 충전계획을 다시 계산합니다. "
             "공식 API가 없어도 전체 흐름을 확인하는 재현 모드입니다."
         )
-        correction1, correction2 = st.columns(2)
-        correction1.metric(
+        st.metric(
             "최근 재생에너지 예측 편차",
             f"{realtime_metadata['recent_renewable_bias_mwh']:+.1f} MWh",
             help="실제값-예측값입니다. 음수면 실제 발전량이 예측보다 적었다는 뜻입니다.",
-        )
-        correction2.metric(
-            "최근 SMP 예측 편차",
-            f"{realtime_metadata['recent_smp_bias']:+.1f} 원/kWh",
-            help="실제값-예측값입니다. SMP는 소비자 충전요금이 아닙니다.",
         )
 else:
     st.warning(
@@ -386,29 +379,20 @@ if plan["conservative"]:
         name="중심 예측 Green Score",
         line={"color": "#277da1", "width": 2, "dash": "dot"},
     )
-fig.add_scatter(
-    x=chart_data["timestamp"],
-    y=chart_data["predicted_smp"],
-    name="예측 SMP(보조지표)",
-    yaxis="y2",
-    line={"color": "#ed8b38", "width": 2},
-)
 fig.update_layout(
     height=430,
     xaxis_title="시간",
     yaxis={"title": "기회점수", "range": [0, 105]},
-    yaxis2={"title": "SMP(원/kWh)", "overlaying": "y", "side": "right"},
     legend={"orientation": "h", "y": 1.14},
     margin={"t": 35, "b": 30},
 )
 st.plotly_chart(fig, use_container_width=True)
 st.caption(
-    "추천점수는 예측 재생에너지를 예측 제주 전력수요로 나눈 공급여력의 과거 백분위입니다. "
-    "SMP는 소비자 충전요금이 아니므로 점수에는 넣지 않고 참고로만 표시합니다."
+    "추천점수는 예측 재생에너지를 예측 제주 전력수요로 나눈 공급여력의 과거 백분위입니다."
 )
 
 if not used.empty:
-    best_slot = used.sort_values([score_to_show, "predicted_smp"], ascending=[False, True]).iloc[0]
+    best_slot = used.sort_values([score_to_show, "timestamp"], ascending=[False, True]).iloc[0]
     candidates = forecast[
         (forecast["timestamp"].dt.hour >= planning_start_hour)
         & (forecast["timestamp"].dt.hour < departure_hour)
@@ -422,29 +406,7 @@ if not used.empty:
 
 if has_actual:
     st.subheader("AI 예측과 실제값 비교")
-    smp_tab, renewable_tab = st.tabs(["SMP", "재생에너지"])
-    with smp_tab:
-        smp_fig = go.Figure()
-        smp_fig.add_scatter(
-            x=forecast["timestamp"], y=forecast["predicted_smp_lower"],
-            line={"width": 0}, name="예상 하한", showlegend=False,
-        )
-        smp_fig.add_scatter(
-            x=forecast["timestamp"], y=forecast["predicted_smp_upper"],
-            line={"width": 0}, fill="tonexty", fillcolor="rgba(237,139,56,0.18)",
-            name="약 90% 예상 범위",
-        )
-        smp_fig.add_scatter(
-            x=forecast["timestamp"], y=forecast["predicted_smp"],
-            name="AI 예측", line={"color": "#ed8b38", "width": 3},
-        )
-        smp_fig.add_scatter(
-            x=forecast["timestamp"], y=forecast["actual_smp"],
-            name="실제값", line={"color": "#243447", "width": 2, "dash": "dot"},
-        )
-        smp_fig.update_layout(height=350, yaxis_title="원/kWh", margin={"t": 20, "b": 30})
-        st.plotly_chart(smp_fig, use_container_width=True)
-
+    renewable_tab, demand_tab = st.tabs(["재생에너지", "제주 전력수요"])
     with renewable_tab:
         renewable_fig = go.Figure()
         renewable_fig.add_scatter(
@@ -466,31 +428,31 @@ if has_actual:
         )
         renewable_fig.update_layout(height=350, yaxis_title="MWh", margin={"t": 20, "b": 30})
         st.plotly_chart(renewable_fig, use_container_width=True)
+
+    with demand_tab:
+        demand_fig = go.Figure()
+        demand_fig.add_scatter(
+            x=forecast["timestamp"], y=forecast["predicted_demand_lower"],
+            line={"width": 0}, name="예상 하한", showlegend=False,
+        )
+        demand_fig.add_scatter(
+            x=forecast["timestamp"], y=forecast["predicted_demand_upper"],
+            line={"width": 0}, fill="tonexty", fillcolor="rgba(39,125,161,0.18)",
+            name="약 90% 예상 범위",
+        )
+        demand_fig.add_scatter(
+            x=forecast["timestamp"], y=forecast["predicted_demand_mwh"],
+            name="AI 예측", line={"color": "#277da1", "width": 3},
+        )
+        demand_fig.add_scatter(
+            x=forecast["timestamp"], y=forecast["actual_demand_mwh"],
+            name="실제값", line={"color": "#243447", "width": 2, "dash": "dot"},
+        )
+        demand_fig.update_layout(height=350, yaxis_title="MWh", margin={"t": 20, "b": 30})
+        st.plotly_chart(demand_fig, use_container_width=True)
 elif has_observed:
     st.subheader("실측 도착 전후 예측 보정")
-    if not is_official_live:
-        smp_tab, renewable_tab = st.tabs(["SMP 보정", "재생에너지 보정"])
-        with smp_tab:
-            smp_fig = go.Figure()
-            smp_fig.add_scatter(
-                x=forecast["timestamp"], y=forecast["raw_predicted_smp"],
-                name="보정 전 예측", line={"color": "#aab4bd", "width": 2, "dash": "dot"},
-            )
-            smp_fig.add_scatter(
-                x=forecast["timestamp"], y=forecast["predicted_smp"],
-                name="실측 반영 후 예측", line={"color": "#ed8b38", "width": 3},
-            )
-            smp_fig.add_scatter(
-                x=forecast["timestamp"], y=forecast["observed_actual_smp"],
-                name="현재까지 도착한 실측", mode="lines+markers",
-                line={"color": "#243447", "width": 2},
-            )
-            smp_fig.update_layout(height=350, yaxis_title="원/kWh", margin={"t": 20, "b": 30})
-            st.plotly_chart(smp_fig, use_container_width=True)
-    else:
-        renewable_tab = st.container()
-
-    with renewable_tab:
+    with st.container():
         renewable_fig = go.Figure()
         renewable_fig.add_scatter(
             x=forecast["timestamp"], y=forecast["raw_predicted_renewable_mwh"],
@@ -522,24 +484,18 @@ else:
     st.caption("Open-Meteo의 제주시 기준 내일 시간별 예보를 30분 동안 저장해 사용합니다.")
 
 st.subheader("추천과 즉시 충전 비교")
-compare1, compare2, compare3 = st.columns(3)
+compare1, compare2 = st.columns(2)
 compare1.metric(
     "보수적 기회점수",
     f"{plan['ai']['weighted_planning_score']:.1f}점",
     f"{plan['ai']['weighted_planning_score'] - plan['baseline']['weighted_planning_score']:+.1f}점",
-)
-compare2.metric(
-    "도매가격 비용지수",
-    f"{plan['ai']['market_cost_proxy_won']:,.0f}",
-    f"{plan['ai']['market_cost_proxy_won'] - plan['baseline']['market_cost_proxy_won']:+,.0f}",
-    delta_color="inverse",
 )
 simulated_cost = (
     plan["ai"]["simulated_settled_cost_won"]
     if has_actual
     else plan["ai"]["simulated_expected_cost_won"]
 )
-compare3.metric(
+compare2.metric(
     "1P=1원 가정 체감비용",
     f"{simulated_cost:,.0f}원",
     f"-{display_points:,.0f}P",
@@ -551,8 +507,8 @@ st.caption(
 st.subheader("추천 시간별 계산")
 table = plan["ai_schedule"].copy()
 table["시간"] = table["timestamp"].dt.strftime("%H:%M")
-table["예측 SMP"] = table["predicted_smp"].round(1)
 table["예측 재생에너지"] = table["predicted_renewable_mwh"].round(1)
+table["예측 제주 전력수요"] = table["predicted_demand_mwh"].round(1)
 table["중심 점수"] = table["green_score"].round(1)
 table["보수적 점수"] = table.get("planning_score", table["green_score"]).round(1)
 table["충전량(kWh)"] = table["scheduled_kwh"].round(2)
@@ -569,7 +525,7 @@ table["예상 보너스 P"] = (
     table["scheduled_kwh"] * table["예상 보너스 단가"]
 ).round(0)
 columns = [
-    "시간", "예측 SMP", "예측 재생에너지", "중심 점수", "보수적 점수",
+    "시간", "예측 재생에너지", "예측 제주 전력수요", "중심 점수", "보수적 점수",
     "충전량(kWh)", "보장 P", "예상 보너스 단가", "예상 보너스 P",
 ]
 if has_actual:
@@ -588,17 +544,6 @@ if has_actual:
     columns.extend(["실제 점수", "정산 보너스 단가", "정산 보너스 P"])
 st.dataframe(table[columns], hide_index=True, use_container_width=True)
 st.caption(f"총 지급 포인트는 한 번 충전당 최대 {session_point_cap:,.0f}P로 제한합니다.")
-
-with st.expander("SMP와 가격절약은 어떻게 연결되나요?"):
-    st.markdown(
-        """
-        **SMP는 소비자가 내는 충전요금이 아닙니다.** 전력시장에서 사용하는 시간별 도매가격 지표입니다.
-
-        그래서 SMP가 낮다고 사용자 충전요금을 자동으로 낮추지 않습니다. 이 서비스에서 사용자가 체감하는
-        절약은 제휴사가 제공한다고 가정한 Green Point에서 나옵니다. 현재 Green Score와 충전시간 추천에는
-        **재생에너지 발전량 ÷ 제주 전력수요**만 사용하며, SMP는 화면의 참고 정보로만 남겨 둡니다.
-        """
-    )
 
 with st.expander("Green 충전 크레딧은 어떻게 정했나요?"):
     st.markdown(
@@ -639,7 +584,7 @@ with st.expander("현재 구현한 것과 아직 구현하지 않은 것"):
         Green Point 정책, 목표 SOC 불가능 경고, 자동검사.
 
         **미구현:** 충전사업자 결제 연동, 실제 포인트 지급, 실제 충전기 제어,
-        실시간 SMP·HVDC·발전기 정비·출력제어 예고, 공식 탄소감축·REC 인증.
+        HVDC·발전기 정비·출력제어 예고, 공식 탄소감축·REC 인증.
         """
     )
 

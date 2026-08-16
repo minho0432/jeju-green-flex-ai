@@ -13,9 +13,7 @@ WEATHER_COLUMNS = [
     "shortwave_radiation",
 ]
 
-# Green Score: 공급여력(재생/수요) 100%. SMP 미사용.
-RENEWABLE_WEIGHT = 1.00
-MARKET_WEIGHT = 0.00
+# Green Score: 공급여력(재생/수요) 100%.
 DEFAULT_RENEWABLE_AI_ALPHA = 1.0
 DEFAULT_DEMAND_AI_ALPHA = 1.0
 DEMAND_FLOOR_MWH = 50.0
@@ -220,13 +218,6 @@ def attach_supply_margin_scores(
     out["renewable_opportunity_score"] = score_against_history(
         out[renewable_col], hist["renewable_mwh"], higher_is_better=True
     ).round(1)
-    if "predicted_smp" in out.columns and "smp" in hist.columns:
-        out["price_opportunity_score"] = score_against_history(
-            out["predicted_smp"], hist["smp"], higher_is_better=False
-        ).round(1)
-    else:
-        out["price_opportunity_score"] = 50.0
-
     out["green_score"] = out["supply_margin_score"]
 
     if renewable_lower_col in out.columns and demand_upper_col in out.columns:

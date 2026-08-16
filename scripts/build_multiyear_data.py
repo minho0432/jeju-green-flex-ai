@@ -166,7 +166,14 @@ def _validate_complete(frame: pd.DataFrame, start: str, end: str, label: str) ->
 
 def build() -> pd.DataFrame:
     current = pd.read_csv(CURRENT_TRAIN, parse_dates=["timestamp"])
-    current_2025 = current[current["timestamp"].dt.year == 2025].copy()
+    training_columns = [
+        "timestamp", "solar_mwh", "wind_mwh", "lng_mwh", "bio_mwh",
+        "temperature_2m", "relative_humidity_2m", "wind_speed_10m",
+        "shortwave_radiation", "renewable_mwh", "demand_mwh",
+    ]
+    current_2025 = current[current["timestamp"].dt.year == 2025][
+        training_columns
+    ].copy()
     if len(current_2025) != 8760:
         raise ValueError(f"기존 2025 학습자료가 8,760행이 아닙니다: {len(current_2025)}")
 
@@ -176,11 +183,10 @@ def build() -> pd.DataFrame:
     historical = generation.merge(demand, on="timestamp", how="left")
     historical = historical.merge(weather, on="timestamp", how="left")
     historical["renewable_mwh"] = historical["solar_mwh"] + historical["wind_mwh"]
-    historical["smp"] = np.nan
     historical["lng_mwh"] = np.nan
     historical["bio_mwh"] = np.nan
 
-    columns = list(current_2025.columns)
+    columns = training_columns
     for column in columns:
         if column not in historical:
             historical[column] = np.nan
@@ -223,4 +229,3 @@ if __name__ == "__main__":
     print("제외: 2023-01-26 00:00 풍력 원본 결측 1시간(임의 보간 없음)")
     print(result.groupby(result["timestamp"].dt.year).size().to_string())
     print(f"공식 수요 유효: {result['demand_mwh'].notna().sum():,}/{len(result):,}")
-    print(f"SMP 유효: {result['smp'].notna().sum():,}/{len(result):,} (Green Score 미사용)")

@@ -22,8 +22,8 @@ def sample_history() -> pd.DataFrame:
     return pd.DataFrame(
         {
             "timestamp": pd.date_range("2025-12-01", periods=200, freq="h"),
-            "smp": list(range(50, 250)),
             "renewable_mwh": list(range(200)),
+            "demand_mwh": [500 + value for value in range(200)],
         }
     )
 
@@ -33,14 +33,14 @@ def sample_forecast() -> pd.DataFrame:
     frame = pd.DataFrame(
         {
             "timestamp": timestamps,
-            "predicted_smp": [100.0] * 24,
-            "predicted_smp_lower": [80.0] * 24,
-            "predicted_smp_upper": [120.0] * 24,
             "predicted_renewable_mwh": [100.0] * 24,
             "predicted_renewable_lower": [70.0] * 24,
             "predicted_renewable_upper": [130.0] * 24,
-            "actual_smp": [110.0] * 24,
+            "predicted_demand_mwh": [600.0] * 24,
+            "predicted_demand_lower": [550.0] * 24,
+            "predicted_demand_upper": [650.0] * 24,
             "actual_renewable_mwh": [70.0] * 24,
+            "actual_demand_mwh": [610.0] * 24,
             "actual_green_score": [50.0] * 24,
         }
     )
@@ -57,9 +57,9 @@ class RealtimeAdjustmentTests(unittest.TestCase):
         )
         future = adjusted[adjusted["timestamp"] > pd.Timestamp("2025-12-10 10:00")]
         observed = adjusted[adjusted["timestamp"] <= pd.Timestamp("2025-12-10 10:00")]
-        self.assertTrue(future["observed_actual_smp"].isna().all())
         self.assertTrue(future["observed_actual_renewable_mwh"].isna().all())
-        self.assertTrue(observed["observed_actual_smp"].notna().all())
+        self.assertTrue(future["observed_actual_demand_mwh"].isna().all())
+        self.assertTrue(observed["observed_actual_demand_mwh"].notna().all())
         self.assertNotIn("actual_green_score", adjusted.columns)
         self.assertEqual(metadata["observed_hours"], 11)
         self.assertLessEqual(
@@ -75,9 +75,7 @@ class RealtimeAdjustmentTests(unittest.TestCase):
         )
         future = adjusted[adjusted["timestamp"] > pd.Timestamp("2025-12-10 10:00")]
         self.assertLess(future.iloc[0]["predicted_renewable_mwh"], 100)
-        self.assertGreater(future.iloc[0]["predicted_smp"], 100)
         self.assertEqual(metadata["recent_renewable_bias_mwh"], -30)
-        self.assertEqual(metadata["recent_smp_bias"], 10)
 
     def test_correction_decays_for_distant_hours(self):
         adjusted, _ = adjust_forecast_with_observations(
@@ -131,15 +129,13 @@ class RealtimeAdjustmentTests(unittest.TestCase):
         )
         as_of = forecast["timestamp"].iloc[10]
         adjusted, metadata = adjust_forecast_with_live_renewables(
-            forecast.drop(columns=["actual_smp", "actual_renewable_mwh"]),
+            forecast.drop(columns=["actual_renewable_mwh", "actual_demand_mwh"]),
             sample_history(),
             observations,
             as_of=as_of,
         )
         future = adjusted[adjusted["timestamp"] > as_of]
-        self.assertTrue(
-            (future["predicted_smp"] == future["raw_predicted_smp"]).all()
-        )
+        self.assertTrue((future["predicted_demand_mwh"] == 600.0).all())
         self.assertTrue(
             (
                 future["predicted_renewable_mwh"]

@@ -51,16 +51,13 @@ def train_forecast_only_models() -> tuple[dict[str, object], pd.DataFrame]:
 
         re_path = model_dir / "renewable_live.joblib"
         dem_path = model_dir / "demand_live.joblib"
-        smp_path = model_dir / "smp_live.joblib"
         if re_path.exists():
             models["renewable_mwh"] = joblib.load(re_path)
         if dem_path.exists():
             models["demand_mwh"] = joblib.load(dem_path)
-        if smp_path.exists():
-            models["smp"] = joblib.load(smp_path)
     except Exception:
         pass
-    for target in ("smp", "renewable_mwh", "demand_mwh"):
+    for target in ("renewable_mwh", "demand_mwh"):
         if target in models:
             continue
         model = build_forecast_only_model(target)
@@ -128,7 +125,6 @@ def build_live_prediction(
 
     features = make_live_features(weather)
     result = weather.copy()
-    result["predicted_smp"] = models["smp"].predict(features)
     result["predicted_renewable_mwh"] = np.maximum(
         models["renewable_mwh"].predict(features), 0
     )
@@ -159,12 +155,9 @@ def build_live_prediction(
         + (1 - demand_alpha) * demand_baseline
     )
 
-    smp_hw = _half_width(metrics, "smp", 15.0)
     re_hw = _half_width(metrics, "renewable_mwh", 25.0)
     dem_hw = _half_width(metrics, "demand_mwh", 40.0)
 
-    result["predicted_smp_lower"] = result["predicted_smp"] - smp_hw
-    result["predicted_smp_upper"] = result["predicted_smp"] + smp_hw
     result["predicted_renewable_lower"] = np.maximum(
         result["predicted_renewable_mwh"] - re_hw, 0
     )

@@ -6,45 +6,14 @@
     "end": "2025-12-31 23:00:00"
   },
   "official_demand_rows": 25559,
-  "smp_rows": 8760,
   "demand_source": "KPX 제주 전력수급현황 계통수요(단위 정규화 완료)",
   "validation": {
     "method": "rolling time-series; folds 1-4 model selection, final 30-day holdout",
     "splits": 5,
     "test_hours_per_split": 720
   },
-  "score_weights": {
-    "renewable_supply_margin": 1.0,
-    "market_smp": 0.0,
-    "note": "Green Score는 예측 재생에너지/예측 수요의 과거 백분위이며 SMP는 사용하지 않음"
-  },
+  "score_definition": "Green Score는 예측 재생에너지/예측 수요의 과거 백분위",
   "targets": {
-    "smp": {
-      "selected_model": "extra_trees",
-      "selection_method": "앞 4개 시간 구간 MAE 최소 모델 선택, 마지막 30일 별도 검증",
-      "candidate_leaderboard": [
-        {
-          "model": "extra_trees",
-          "selection_mae": 14.1137,
-          "selection_rows": 2880
-        }
-      ],
-      "ai": {
-        "mae": 13.9871,
-        "rmse": 17.9355,
-        "r2": 0.2009
-      },
-      "baseline_month_hour": {
-        "mae": 14.959,
-        "rmse": 21.4836,
-        "r2": -0.1465
-      },
-      "mae_improvement_percent": 6.5,
-      "approx_90_interval_half_width": 30.003,
-      "last_fold_interval_coverage": 0.9403,
-      "holdout_rows": 720,
-      "training_rows_available": 8592
-    },
     "renewable_mwh": {
       "selected_model": "lightgbm_regularized",
       "selection_method": "앞 4개 시간 구간 MAE 최소 모델 선택, 마지막 30일 별도 검증",
@@ -129,33 +98,6 @@
     }
   },
   "forecast_only_targets": {
-    "smp": {
-      "selected_model": "extra_trees",
-      "selection_method": "앞 4개 시간 구간 MAE 최소 모델 선택, 마지막 30일 별도 검증",
-      "candidate_leaderboard": [
-        {
-          "model": "extra_trees",
-          "selection_mae": 14.1536,
-          "selection_rows": 2880
-        }
-      ],
-      "ai": {
-        "mae": 11.6391,
-        "rmse": 15.736,
-        "r2": 0.3849
-      },
-      "baseline_month_hour": {
-        "mae": 14.959,
-        "rmse": 21.4836,
-        "r2": -0.1465
-      },
-      "mae_improvement_percent": 22.19,
-      "approx_90_interval_half_width": 30.4374,
-      "last_fold_interval_coverage": 0.9528,
-      "holdout_rows": 720,
-      "training_rows_available": 8760,
-      "note": "시간·기상예보형 입력 검증이며 실제 날씨예보 오차는 별도"
-    },
     "renewable_mwh": {
       "selected_model": "hist_gradient_boosting",
       "selection_method": "앞 4개 시간 구간 MAE 최소 모델 선택, 마지막 30일 별도 검증",

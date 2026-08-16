@@ -27,7 +27,7 @@ DEMO_PREDICTION_PATH = OUTPUT_DIR / "demo_predictions.csv"
 BACKTEST_PATH = OUTPUT_DIR / "backtest_predictions.csv"
 METRICS_PATH = OUTPUT_DIR / "model_metrics.json"
 PRIMARY_TARGETS = ("renewable_mwh", "demand_mwh")
-ALL_TARGETS = ("smp", *PRIMARY_TARGETS)
+ALL_TARGETS = PRIMARY_TARGETS
 N_SPLITS = 5
 TEST_HOURS = 24 * 30
 DEMO_DATE = pd.Timestamp("2025-12-10")
@@ -66,7 +66,7 @@ def _evaluate_mode(raw: pd.DataFrame, target: str, live: bool):
     """앞 4개 구간으로 모델을 선택하고 마지막 30일은 성능 확인에만 씁니다."""
     frame, x = _prepare_frame(raw, target, live)
     splits = list(TimeSeriesSplit(n_splits=N_SPLITS, test_size=TEST_HOURS).split(frame))
-    candidates = ("extra_trees",) if target == "smp" else MODEL_CANDIDATES
+    candidates = MODEL_CANDIDATES
     candidate_parts = {name: [] for name in candidates}
 
     for fold, (train_idx, test_idx) in enumerate(splits, start=1):
@@ -76,8 +76,7 @@ def _evaluate_mode(raw: pd.DataFrame, target: str, live: bool):
             model = build_model(target, candidate)
             model.fit(x.iloc[train_idx], train_frame[target])
             prediction = model.predict(x.iloc[test_idx])
-            if target != "smp":
-                prediction = np.maximum(prediction, 0)
+            prediction = np.maximum(prediction, 0)
             candidate_parts[candidate].append(pd.DataFrame({
                 "timestamp": test_frame["timestamp"].to_numpy(),
                 "actual": test_frame[target].to_numpy(),
@@ -156,17 +155,13 @@ def train():
         "data_rows_total": int(len(raw)), "additional_rows_vs_2025": int(len(raw) - 8760),
         "data_period": {"start": str(raw["timestamp"].min()), "end": str(raw["timestamp"].max())},
         "official_demand_rows": int(raw["demand_mwh"].notna().sum()),
-        "smp_rows": int(raw.get("smp", pd.Series(dtype=float)).notna().sum()),
         "demand_source": "KPX 제주 전력수급현황 계통수요(단위 정규화 완료)",
         "validation": {"method": "rolling time-series; folds 1-4 model selection, final 30-day holdout", "splits": N_SPLITS, "test_hours_per_split": TEST_HOURS},
-        "score_weights": {"renewable_supply_margin": 1.0, "market_smp": 0.0,
-                          "note": "Green Score는 예측 재생에너지/예측 수요의 과거 백분위이며 SMP는 사용하지 않음"},
+        "score_definition": "Green Score는 예측 재생에너지/예측 수요의 과거 백분위",
         "targets": {}, "forecast_only_targets": {},
     }
     backtests = {"full": {}, "live": {}}
     for target in ALL_TARGETS:
-        if target == "smp" and ("smp" not in raw or not raw["smp"].notna().any()):
-            continue
         for mode, live in (("full", False), ("live", True)):
             evaluated, details, winner = _evaluate_mode(raw, target, live)
             backtests[mode][target] = evaluated
@@ -205,7 +200,7 @@ def train():
 
     base = backtests["live"]["renewable_mwh"].query("fold == @N_SPLITS").copy()
     backtest = base.rename(columns={"actual": "renewable_mwh", "prediction": "live_renewable_mwh", "baseline": "baseline_renewable_mwh"})
-    for target in ("demand_mwh", "smp"):
+    for target in ("demand_mwh",):
         part = backtests["live"][target].query("fold == @N_SPLITS").copy()
         part = part.rename(columns={"actual": target, "prediction": f"live_{target}", "baseline": f"baseline_{target}"})
         backtest = backtest.merge(part.drop(columns="fold"), on="timestamp", how="left")
@@ -231,28 +226,25 @@ def train():
         raise ValueError("발표용 2025-12-10 예측 24개를 만들지 못했습니다.")
     source = raw[raw["timestamp"].dt.normalize() == DEMO_DATE][["timestamp", *WEATHER_COLUMNS]]
     result = pd.DataFrame({
-        "timestamp": demo["timestamp"], "actual_smp": demo["smp"],
+        "timestamp": demo["timestamp"],
         "actual_renewable_mwh": demo["renewable_mwh"], "actual_demand_mwh": demo["demand_mwh"],
-        "predicted_smp": demo["live_smp"], "predicted_renewable_mwh": demo["live_renewable_mwh"],
+        "predicted_renewable_mwh": demo["live_renewable_mwh"],
         "predicted_demand_mwh": demo["live_demand_mwh"],
     }).merge(source, on="timestamp")
     for target, center, prefix in (
-        ("smp", "predicted_smp", "predicted_smp"),
         ("renewable_mwh", "predicted_renewable_mwh", "predicted_renewable"),
         ("demand_mwh", "predicted_demand_mwh", "predicted_demand"),
     ):
         half_width = metrics["forecast_only_targets"][target]["approx_90_interval_half_width"]
         result[f"{prefix}_lower"] = result[center] - half_width
         result[f"{prefix}_upper"] = result[center] + half_width
-        if target != "smp":
-            result[f"{prefix}_lower"] = result[f"{prefix}_lower"].clip(lower=0)
+        result[f"{prefix}_lower"] = result[f"{prefix}_lower"].clip(lower=0)
 
     history = raw[raw["timestamp"] < DEMO_DATE]
     result = attach_supply_margin_scores(result, history)
     actual_margin_demo = supply_margin(result["actual_renewable_mwh"], result["actual_demand_mwh"])
     historical_margin = supply_margin(history["renewable_mwh"], history["demand_mwh"])
     result["actual_green_score"] = score_against_history(actual_margin_demo, historical_margin, True).round(1)
-    result["actual_price_score"] = score_against_history(result["actual_smp"], history["smp"], False).round(1)
     result["actual_renewable_score"] = score_against_history(result["actual_renewable_mwh"], history["renewable_mwh"], True).round(1)
 
     result.to_csv(DEMO_PREDICTION_PATH, index=False, encoding="utf-8-sig")
