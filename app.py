@@ -403,8 +403,8 @@ fig.update_layout(
 )
 st.plotly_chart(fig, use_container_width=True)
 st.caption(
-    "추천점수는 재생에너지 기회 80%와 SMP 시장기회 20%를 합칩니다. "
-    "SMP는 소비자 충전요금이 아니라 보조적인 전력시장 지표입니다."
+    "추천점수는 예측 재생에너지를 예측 제주 전력수요로 나눈 공급여력의 과거 백분위입니다. "
+    "SMP는 소비자 충전요금이 아니므로 점수에는 넣지 않고 참고로만 표시합니다."
 )
 
 if not used.empty:
@@ -417,7 +417,7 @@ if not used.empty:
     st.success(
         f"추천 이유: {best_slot['timestamp']:%H시}의 보수적 기회점수가 사용 가능시간 평균보다 "
         f"{score_difference:+.1f}점 높습니다. 재생에너지는 {best_slot['predicted_renewable_mwh']:.1f}MWh, "
-        f"SMP는 {best_slot['predicted_smp']:.1f}원/kWh로 예상됩니다."
+        f"제주 전력수요는 {best_slot['predicted_demand_mwh']:.1f}MWh로 예상됩니다."
     )
 
 if has_actual:
@@ -595,8 +595,8 @@ with st.expander("SMP와 가격절약은 어떻게 연결되나요?"):
         **SMP는 소비자가 내는 충전요금이 아닙니다.** 전력시장에서 사용하는 시간별 도매가격 지표입니다.
 
         그래서 SMP가 낮다고 사용자 충전요금을 자동으로 낮추지 않습니다. 이 서비스에서 사용자가 체감하는
-        절약은 제휴사가 제공한다고 가정한 Green Point에서 나옵니다. SMP는 전력시장 관점에서 유리한 시간을
-        찾는 20% 보조 신호로만 사용합니다.
+        절약은 제휴사가 제공한다고 가정한 Green Point에서 나옵니다. 현재 Green Score와 충전시간 추천에는
+        **재생에너지 발전량 ÷ 제주 전력수요**만 사용하며, SMP는 화면의 참고 정보로만 남겨 둡니다.
         """
     )
 
@@ -618,32 +618,28 @@ with st.expander("Green 충전 크레딧은 어떻게 정했나요?"):
     )
 
 with st.expander("AI 성능을 어떻게 검증했나요?"):
-    st.write("시간순서를 섞지 않고 서로 다른 5개 기간에서 각각 30일씩 시험했습니다.")
-    for target, label in [("smp", "SMP"), ("renewable_mwh", "재생에너지")]:
-        values = metrics["targets"][target]
-        best_name = values["best_baseline"]
-        baseline_mae = values["baselines"][best_name]["mae"]
+    st.write("앞선 4개 시간 구간으로 모델을 선택하고, 마지막 30일은 선택에 쓰지 않고 최종 확인했습니다.")
+    for target, label in [("renewable_mwh", "재생에너지"), ("demand_mwh", "제주 전력수요")]:
+        values = metrics["forecast_only_targets"][target]
+        baseline_mae = values["baseline_month_hour"]["mae"]
         st.write(
-            f"**{label} 검증 모델** — AI MAE {values['ai']['mae']}, "
-            f"강한 단순 기준({best_name}) MAE {baseline_mae}, "
+            f"**{label} 내일 예보형 모델** — 최종 30일 MAE {values['ai']['mae']}, "
+            f"월·시간 기준 MAE {baseline_mae}, "
             f"개선율 {values['mae_improvement_percent']}%"
         )
-        live_values = metrics["forecast_only_targets"][target]
-        st.write(
-            f"**{label} 오늘 예보용 모델** — 과거 관측날씨 기준 MAE {live_values['ai']['mae']}. "
-            "실제 기상예보 오차는 포함하지 않았습니다."
-        )
+    st.write("실제 과거 기상예보 원본이 아닌 관측날씨로 재현했으므로, 실제 기상예보 오차는 별도 한계입니다.")
 
 with st.expander("현재 구현한 것과 아직 구현하지 않은 것"):
     st.markdown(
         """
-        **구현:** 과거 데이터 5회 검증, 오늘·내일 날씨예보 조회, 두 종류의 예측 모델,
+        **구현:** 2023~2025년 25,559시간 병합, 후보 모델 시간순 비교, 오늘·내일 날씨예보 조회,
+        재생에너지·전력수요 예측,
         KPX 제주 5분 태양광·풍력·수요·공급 실측 연결, 도착한 재생에너지 실측으로 남은 예측과
         충전시간을 다시 계산하는 보정, API 장애용 과거 재현, 보수적 연속 충전시간,
         Green Point 정책, 목표 SOC 불가능 경고, 자동검사.
 
         **미구현:** 충전사업자 결제 연동, 실제 포인트 지급, 실제 충전기 제어,
-        실시간 SMP·HVDC·발전기 정비·출력제어 예고, 다년도 모델, 공식 탄소감축·REC 인증.
+        실시간 SMP·HVDC·발전기 정비·출력제어 예고, 공식 탄소감축·REC 인증.
         """
     )
 

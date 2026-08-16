@@ -1,136 +1,260 @@
 {
-  "data_rows_after_lag": 8592,
-  "validation": {
-    "method": "5-fold rolling time-series backtest",
-    "test_days_per_fold": 30,
-    "total_test_rows": 3600,
-    "folds": [
-      {
-        "fold": 1,
-        "train_start": "2025-01-08 00:00:00",
-        "train_end": "2025-08-03 23:00:00",
-        "test_start": "2025-08-04 00:00:00",
-        "test_end": "2025-09-02 23:00:00",
-        "test_rows": 720
-      },
-      {
-        "fold": 2,
-        "train_start": "2025-01-08 00:00:00",
-        "train_end": "2025-09-02 23:00:00",
-        "test_start": "2025-09-03 00:00:00",
-        "test_end": "2025-10-02 23:00:00",
-        "test_rows": 720
-      },
-      {
-        "fold": 3,
-        "train_start": "2025-01-08 00:00:00",
-        "train_end": "2025-10-02 23:00:00",
-        "test_start": "2025-10-03 00:00:00",
-        "test_end": "2025-11-01 23:00:00",
-        "test_rows": 720
-      },
-      {
-        "fold": 4,
-        "train_start": "2025-01-08 00:00:00",
-        "train_end": "2025-11-01 23:00:00",
-        "test_start": "2025-11-02 00:00:00",
-        "test_end": "2025-12-01 23:00:00",
-        "test_rows": 720
-      },
-      {
-        "fold": 5,
-        "train_start": "2025-01-08 00:00:00",
-        "train_end": "2025-12-01 23:00:00",
-        "test_start": "2025-12-02 00:00:00",
-        "test_end": "2025-12-31 23:00:00",
-        "test_rows": 720
-      }
-    ]
+  "data_rows_total": 25559,
+  "additional_rows_vs_2025": 16799,
+  "data_period": {
+    "start": "2023-01-01 00:00:00",
+    "end": "2025-12-31 23:00:00"
   },
-  "note": "24시간 전·168시간 전 값만 사용하며 미래값은 입력하지 않음",
+  "official_demand_rows": 25559,
+  "smp_rows": 8760,
+  "demand_source": "KPX 제주 전력수급현황 계통수요(단위 정규화 완료)",
+  "validation": {
+    "method": "rolling time-series; folds 1-4 model selection, final 30-day holdout",
+    "splits": 5,
+    "test_hours_per_split": 720
+  },
   "score_weights": {
-    "renewable": 0.8,
-    "market_smp": 0.2,
-    "note": "재생에너지는 핵심 신호, SMP는 소비자 요금이 아닌 보조 시장지표"
+    "renewable_supply_margin": 1.0,
+    "market_smp": 0.0,
+    "note": "Green Score는 예측 재생에너지/예측 수요의 과거 백분위이며 SMP는 사용하지 않음"
   },
   "targets": {
     "smp": {
-      "ai": {
-        "mae": 10.7418,
-        "rmse": 15.4031,
-        "r2": 0.5942
-      },
-      "baselines": {
-        "24_hours_ago": {
-          "mae": 12.7262,
-          "rmse": 20.2747,
-          "r2": 0.2969
-        },
-        "168_hours_ago": {
-          "mae": 12.7965,
-          "rmse": 19.9645,
-          "r2": 0.3183
-        },
-        "average_24_168": {
-          "mae": 11.2154,
-          "rmse": 16.6182,
-          "r2": 0.5276
+      "selected_model": "extra_trees",
+      "selection_method": "앞 4개 시간 구간 MAE 최소 모델 선택, 마지막 30일 별도 검증",
+      "candidate_leaderboard": [
+        {
+          "model": "extra_trees",
+          "selection_mae": 14.1137,
+          "selection_rows": 2880
         }
+      ],
+      "ai": {
+        "mae": 13.9871,
+        "rmse": 17.9355,
+        "r2": 0.2009
       },
-      "best_baseline": "average_24_168",
-      "mae_improvement_percent": 4.22,
-      "approx_90_interval_half_width": 24.5833,
-      "last_fold_interval_coverage": 0.9028
+      "baseline_month_hour": {
+        "mae": 14.959,
+        "rmse": 21.4836,
+        "r2": -0.1465
+      },
+      "mae_improvement_percent": 6.5,
+      "approx_90_interval_half_width": 30.003,
+      "last_fold_interval_coverage": 0.9403,
+      "holdout_rows": 720,
+      "training_rows_available": 8592
     },
     "renewable_mwh": {
-      "ai": {
-        "mae": 10.9011,
-        "rmse": 19.9327,
-        "r2": 0.9126
-      },
-      "baselines": {
-        "24_hours_ago": {
-          "mae": 16.2482,
-          "rmse": 33.095,
-          "r2": 0.7592
+      "selected_model": "lightgbm_regularized",
+      "selection_method": "앞 4개 시간 구간 MAE 최소 모델 선택, 마지막 30일 별도 검증",
+      "candidate_leaderboard": [
+        {
+          "model": "lightgbm_regularized",
+          "selection_mae": 23.8281,
+          "selection_rows": 2880
         },
-        "168_hours_ago": {
-          "mae": 20.7477,
-          "rmse": 41.585,
-          "r2": 0.6198
+        {
+          "model": "lightgbm_balanced",
+          "selection_mae": 24.8495,
+          "selection_rows": 2880
         },
-        "average_24_168": {
-          "mae": 15.7213,
-          "rmse": 30.8632,
-          "r2": 0.7906
+        {
+          "model": "hist_gradient_boosting",
+          "selection_mae": 26.1946,
+          "selection_rows": 2880
+        },
+        {
+          "model": "extra_trees",
+          "selection_mae": 29.9026,
+          "selection_rows": 2880
         }
+      ],
+      "ai": {
+        "mae": 22.4091,
+        "rmse": 31.5518,
+        "r2": 0.7144
       },
-      "best_baseline": "average_24_168",
-      "mae_improvement_percent": 30.66,
-      "approx_90_interval_half_width": 33.2492,
-      "last_fold_interval_coverage": 0.9361
+      "baseline_month_hour": {
+        "mae": 39.297,
+        "rmse": 43.4172,
+        "r2": 0.4592
+      },
+      "mae_improvement_percent": 42.98,
+      "approx_90_interval_half_width": 57.3758,
+      "last_fold_interval_coverage": 0.9292,
+      "holdout_rows": 720,
+      "training_rows_available": 25055
+    },
+    "demand_mwh": {
+      "selected_model": "lightgbm_balanced",
+      "selection_method": "앞 4개 시간 구간 MAE 최소 모델 선택, 마지막 30일 별도 검증",
+      "candidate_leaderboard": [
+        {
+          "model": "lightgbm_balanced",
+          "selection_mae": 17.133,
+          "selection_rows": 2880
+        },
+        {
+          "model": "hist_gradient_boosting",
+          "selection_mae": 17.1665,
+          "selection_rows": 2880
+        },
+        {
+          "model": "lightgbm_regularized",
+          "selection_mae": 17.1864,
+          "selection_rows": 2880
+        },
+        {
+          "model": "extra_trees",
+          "selection_mae": 19.1588,
+          "selection_rows": 2880
+        }
+      ],
+      "ai": {
+        "mae": 20.607,
+        "rmse": 28.1365,
+        "r2": 0.8864
+      },
+      "baseline_month_hour": {
+        "mae": 41.9477,
+        "rmse": 53.0988,
+        "r2": 0.5956
+      },
+      "mae_improvement_percent": 50.87,
+      "approx_90_interval_half_width": 38.362,
+      "last_fold_interval_coverage": 0.8583,
+      "holdout_rows": 720,
+      "training_rows_available": 25055
     }
   },
   "forecast_only_targets": {
     "smp": {
+      "selected_model": "extra_trees",
+      "selection_method": "앞 4개 시간 구간 MAE 최소 모델 선택, 마지막 30일 별도 검증",
+      "candidate_leaderboard": [
+        {
+          "model": "extra_trees",
+          "selection_mae": 14.1536,
+          "selection_rows": 2880
+        }
+      ],
       "ai": {
-        "mae": 14.1874,
-        "rmse": 18.8169,
-        "r2": 0.3944
+        "mae": 11.6391,
+        "rmse": 15.736,
+        "r2": 0.3849
       },
-      "note": "과거 관측날씨 기준 검증이며 실제 기상예보 오차는 포함하지 않음",
-      "approx_90_interval_half_width": 31.3539,
-      "last_fold_interval_coverage": 0.9431
+      "baseline_month_hour": {
+        "mae": 14.959,
+        "rmse": 21.4836,
+        "r2": -0.1465
+      },
+      "mae_improvement_percent": 22.19,
+      "approx_90_interval_half_width": 30.4374,
+      "last_fold_interval_coverage": 0.9528,
+      "holdout_rows": 720,
+      "training_rows_available": 8760,
+      "note": "시간·기상예보형 입력 검증이며 실제 날씨예보 오차는 별도"
     },
     "renewable_mwh": {
+      "selected_model": "hist_gradient_boosting",
+      "selection_method": "앞 4개 시간 구간 MAE 최소 모델 선택, 마지막 30일 별도 검증",
+      "candidate_leaderboard": [
+        {
+          "model": "hist_gradient_boosting",
+          "selection_mae": 37.8227,
+          "selection_rows": 2880
+        },
+        {
+          "model": "lightgbm_regularized",
+          "selection_mae": 37.8523,
+          "selection_rows": 2880
+        },
+        {
+          "model": "extra_trees",
+          "selection_mae": 37.8624,
+          "selection_rows": 2880
+        },
+        {
+          "model": "lightgbm_balanced",
+          "selection_mae": 37.9027,
+          "selection_rows": 2880
+        }
+      ],
       "ai": {
-        "mae": 11.9452,
-        "rmse": 21.1573,
-        "r2": 0.9016
+        "mae": 37.353,
+        "rmse": 41.6852,
+        "r2": 0.5015
       },
-      "note": "과거 관측날씨 기준 검증이며 실제 기상예보 오차는 포함하지 않음",
-      "approx_90_interval_half_width": 34.5948,
-      "last_fold_interval_coverage": 0.9194
+      "baseline_month_hour": {
+        "mae": 39.297,
+        "rmse": 43.4172,
+        "r2": 0.4592
+      },
+      "mae_improvement_percent": 4.95,
+      "approx_90_interval_half_width": 74.5237,
+      "last_fold_interval_coverage": 0.9556,
+      "holdout_rows": 720,
+      "training_rows_available": 25559,
+      "note": "시간·기상예보형 입력 검증이며 실제 날씨예보 오차는 별도",
+      "blend_alpha_ai": 0.30000000000000004
+    },
+    "demand_mwh": {
+      "selected_model": "lightgbm_regularized",
+      "selection_method": "앞 4개 시간 구간 MAE 최소 모델 선택, 마지막 30일 별도 검증",
+      "candidate_leaderboard": [
+        {
+          "model": "lightgbm_regularized",
+          "selection_mae": 24.503,
+          "selection_rows": 2880
+        },
+        {
+          "model": "lightgbm_balanced",
+          "selection_mae": 24.6375,
+          "selection_rows": 2880
+        },
+        {
+          "model": "hist_gradient_boosting",
+          "selection_mae": 24.7634,
+          "selection_rows": 2880
+        },
+        {
+          "model": "extra_trees",
+          "selection_mae": 25.5817,
+          "selection_rows": 2880
+        }
+      ],
+      "ai": {
+        "mae": 22.4568,
+        "rmse": 29.1073,
+        "r2": 0.8785
+      },
+      "baseline_month_hour": {
+        "mae": 41.9477,
+        "rmse": 53.0988,
+        "r2": 0.5956
+      },
+      "mae_improvement_percent": 46.46,
+      "approx_90_interval_half_width": 54.1641,
+      "last_fold_interval_coverage": 0.9514,
+      "holdout_rows": 720,
+      "training_rows_available": 25559,
+      "note": "시간·기상예보형 입력 검증이며 실제 날씨예보 오차는 별도",
+      "blend_alpha_ai": 1.0
+    }
+  },
+  "green_time": {
+    "evaluation_rows": 720,
+    "definition": "percentile(predicted renewable / predicted demand) versus historical distribution",
+    "supply_margin_mae_ai": 0.053125,
+    "supply_margin_mae_baseline": 0.056906,
+    "top_30_percent_overlap_ai": 0.9213,
+    "top_30_percent_overlap_baseline": 0.9213,
+    "deployment_blend": {
+      "renewable_ai_alpha": 0.30000000000000004,
+      "demand_ai_alpha": 1.0,
+      "selection_top_30_overlap": 0.8773,
+      "selection_supply_margin_mae": 0.058227
     }
   }
 }

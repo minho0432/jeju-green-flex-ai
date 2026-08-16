@@ -1,4 +1,4 @@
-"""Open-Meteo 예보로 다음 24시간의 실험용 충전 입력을 만든다."""
+"""Open-Meteo 예보로 다음 24시간의 재생·수요·공급여력 점수를 만든다."""
 
 from __future__ import annotations
 
@@ -12,11 +12,10 @@ import pandas as pd
 from sklearn.ensemble import HistGradientBoostingRegressor
 
 from model_utils import (
-    MARKET_WEIGHT,
-    RENEWABLE_WEIGHT,
     WEATHER_COLUMNS,
+    attach_supply_margin_scores,
+    ensure_demand_column,
     make_live_features,
-    score_against_history,
 )
 
 
@@ -30,7 +29,6 @@ FORECAST_UNCERTAINTY_MULTIPLIER = 1.25
 
 
 def build_forecast_only_model(target: str):
-    """예보 시점에 알 수 있는 시간·날씨만 사용하는 실험용 모델."""
     return HistGradientBoostingRegressor(
         max_iter=250,
         learning_rate=0.05,
@@ -41,20 +39,40 @@ def build_forecast_only_model(target: str):
 
 
 def train_forecast_only_models() -> tuple[dict[str, object], pd.DataFrame]:
-    """배포 서버에서 한 번만 학습할 오늘 예보용 모델 두 개를 만든다."""
+    """배포 서버: 저장된 LightGBM이 있으면 사용, 없으면 현장 학습."""
     history = pd.read_csv(DATA_PATH, parse_dates=["timestamp"]).sort_values("timestamp")
+    history = ensure_demand_column(history)
     history = history.dropna(subset=WEATHER_COLUMNS).reset_index(drop=True)
     features = make_live_features(history)
     models: dict[str, object] = {}
-    for target in ("smp", "renewable_mwh"):
+    model_dir = ROOT / "models"
+    try:
+        import joblib
+
+        re_path = model_dir / "renewable_live.joblib"
+        dem_path = model_dir / "demand_live.joblib"
+        smp_path = model_dir / "smp_live.joblib"
+        if re_path.exists():
+            models["renewable_mwh"] = joblib.load(re_path)
+        if dem_path.exists():
+            models["demand_mwh"] = joblib.load(dem_path)
+        if smp_path.exists():
+            models["smp"] = joblib.load(smp_path)
+    except Exception:
+        pass
+    for target in ("smp", "renewable_mwh", "demand_mwh"):
+        if target in models:
+            continue
         model = build_forecast_only_model(target)
-        model.fit(features, history[target])
+        available = history[target].notna()
+        if not available.any():
+            raise ValueError(f"{target} 학습에 사용할 값이 없습니다.")
+        model.fit(features.loc[available], history.loc[available, target])
         models[target] = model
     return models, history
 
 
 def fetch_open_meteo_forecast(target_day_offset: int = 1) -> pd.DataFrame:
-    """제주시 기준 오늘(0) 또는 내일(1) 0~23시 예보를 가져온다."""
     if target_day_offset not in {0, 1}:
         raise ValueError("날씨예보 날짜 간격은 오늘 0 또는 내일 1이어야 합니다.")
     query = urlencode(
@@ -69,7 +87,7 @@ def fetch_open_meteo_forecast(target_day_offset: int = 1) -> pd.DataFrame:
     try:
         with urlopen(f"{OPEN_METEO_URL}?{query}", timeout=12) as response:
             payload = json.load(response)
-    except Exception as error:  # 네트워크·API 오류를 사용자 메시지로 바꾼다.
+    except Exception as error:
         raise RuntimeError(
             "오늘 날씨예보를 가져오지 못했습니다. 잠시 후 다시 시도하거나 검증 모드를 사용하세요."
         ) from error
@@ -79,9 +97,9 @@ def fetch_open_meteo_forecast(target_day_offset: int = 1) -> pd.DataFrame:
         raise RuntimeError("날씨예보 응답에 시간 정보가 없습니다.")
     frame = pd.DataFrame({"timestamp": pd.to_datetime(hourly["time"])})
     for column in WEATHER_COLUMNS:
-        if column not in hourly:
-            raise RuntimeError(f"날씨예보 응답에 {column} 정보가 없습니다.")
-        frame[column] = pd.to_numeric(hourly[column], errors="coerce")
+        frame[column] = pd.to_numeric(
+            hourly.get(column, [None] * len(frame)), errors="coerce"
+        )
 
     now = pd.Timestamp.now(tz="Asia/Seoul").tz_localize(None)
     target_date = (now + pd.Timedelta(days=target_day_offset)).date()
@@ -91,62 +109,71 @@ def fetch_open_meteo_forecast(target_day_offset: int = 1) -> pd.DataFrame:
     return frame
 
 
+def _half_width(metrics: dict, target: str, default: float) -> float:
+    try:
+        return (
+            float(metrics["forecast_only_targets"][target]["approx_90_interval_half_width"])
+            * FORECAST_UNCERTAINTY_MULTIPLIER
+        )
+    except Exception:
+        return float(default) * FORECAST_UNCERTAINTY_MULTIPLIER
+
+
 def build_live_prediction(
     models: dict[str, object], history: pd.DataFrame, weather: pd.DataFrame
 ) -> pd.DataFrame:
-    """오늘 날씨예보를 SMP·재생에너지 예측과 보수적 점수로 변환한다."""
-    metrics = json.loads(METRICS_PATH.read_text(encoding="utf-8"))
+    """날씨예보 → 재생·수요 예측 → 공급여력 Green Score."""
+    history = ensure_demand_column(history)
+    metrics = json.loads(METRICS_PATH.read_text(encoding="utf-8")) if METRICS_PATH.exists() else {}
+
     features = make_live_features(weather)
     result = weather.copy()
     result["predicted_smp"] = models["smp"].predict(features)
     result["predicted_renewable_mwh"] = np.maximum(
         models["renewable_mwh"].predict(features), 0
     )
+    if "demand_mwh" in models:
+        result["predicted_demand_mwh"] = np.maximum(
+            models["demand_mwh"].predict(features), 0
+        )
+    else:
+        from model_utils import month_hour_baseline
 
-    live_metrics = metrics["forecast_only_targets"]
-    smp_half_width = (
-        live_metrics["smp"]["approx_90_interval_half_width"]
-        * FORECAST_UNCERTAINTY_MULTIPLIER
+        result["predicted_demand_mwh"] = month_hour_baseline(
+            history, "demand_mwh", result
+        ).to_numpy()
+
+    # 모델 선택 구간에서 정한 혼합비만 사용합니다. 오늘 결과를 보고 임의 조정하지 않습니다.
+    blend = metrics.get("green_time", {}).get("deployment_blend", {})
+    from model_utils import month_hour_baseline
+    renewable_alpha = float(blend.get("renewable_ai_alpha", 1.0))
+    demand_alpha = float(blend.get("demand_ai_alpha", 1.0))
+    renewable_baseline = month_hour_baseline(history, "renewable_mwh", result).to_numpy()
+    demand_baseline = month_hour_baseline(history, "demand_mwh", result).to_numpy()
+    result["predicted_renewable_mwh"] = (
+        renewable_alpha * result["predicted_renewable_mwh"]
+        + (1 - renewable_alpha) * renewable_baseline
     )
-    renewable_half_width = (
-        live_metrics["renewable_mwh"]["approx_90_interval_half_width"]
-        * FORECAST_UNCERTAINTY_MULTIPLIER
+    result["predicted_demand_mwh"] = (
+        demand_alpha * result["predicted_demand_mwh"]
+        + (1 - demand_alpha) * demand_baseline
     )
-    result["predicted_smp_lower"] = result["predicted_smp"] - smp_half_width
-    result["predicted_smp_upper"] = result["predicted_smp"] + smp_half_width
+
+    smp_hw = _half_width(metrics, "smp", 15.0)
+    re_hw = _half_width(metrics, "renewable_mwh", 25.0)
+    dem_hw = _half_width(metrics, "demand_mwh", 40.0)
+
+    result["predicted_smp_lower"] = result["predicted_smp"] - smp_hw
+    result["predicted_smp_upper"] = result["predicted_smp"] + smp_hw
     result["predicted_renewable_lower"] = np.maximum(
-        result["predicted_renewable_mwh"] - renewable_half_width, 0
+        result["predicted_renewable_mwh"] - re_hw, 0
     )
-    result["predicted_renewable_upper"] = (
-        result["predicted_renewable_mwh"] + renewable_half_width
+    result["predicted_renewable_upper"] = result["predicted_renewable_mwh"] + re_hw
+    result["predicted_demand_lower"] = np.maximum(
+        result["predicted_demand_mwh"] - dem_hw, 0
     )
+    result["predicted_demand_upper"] = result["predicted_demand_mwh"] + dem_hw
 
-    result["price_opportunity_score"] = score_against_history(
-        result["predicted_smp"], history["smp"], higher_is_better=False
-    ).round(1)
-    result["renewable_opportunity_score"] = score_against_history(
-        result["predicted_renewable_mwh"],
-        history["renewable_mwh"],
-        higher_is_better=True,
-    ).round(1)
-    result["green_score"] = (
-        MARKET_WEIGHT * result["price_opportunity_score"]
-        + RENEWABLE_WEIGHT * result["renewable_opportunity_score"]
-    ).round(1)
-    result["conservative_price_score"] = score_against_history(
-        result["predicted_smp_upper"], history["smp"], higher_is_better=False
-    ).round(1)
-    result["conservative_renewable_score"] = score_against_history(
-        result["predicted_renewable_lower"],
-        history["renewable_mwh"],
-        higher_is_better=True,
-    ).round(1)
-    result["planning_score"] = (
-        MARKET_WEIGHT * result["conservative_price_score"]
-        + RENEWABLE_WEIGHT * result["conservative_renewable_score"]
-    ).round(1)
-    result["forecast_risk_points"] = (
-        result["green_score"] - result["planning_score"]
-    ).clip(lower=0).round(1)
-    result["source_mode"] = "live_weather_forecast_experiment"
+    result = attach_supply_margin_scores(result, history)
+    result["source_mode"] = "live_weather_supply_margin"
     return result

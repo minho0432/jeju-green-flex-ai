@@ -1,4 +1,4 @@
-"""제주 SMP·재생에너지 예측 모델을 공정하게 검증하고 데모 예측을 만든다."""
+"""다년도 공식 데이터로 후보 모델을 시간순 비교·검증하고 최종 모델을 저장합니다."""
 
 from __future__ import annotations
 
@@ -8,23 +8,15 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import ExtraTreesRegressor, HistGradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import TimeSeriesSplit
 
+from model_builders import MODEL_CANDIDATES, build_model
 from model_utils import (
-    FEATURE_COLUMNS,
-    LAG_COLUMNS,
-    MARKET_WEIGHT,
-    RENEWABLE_WEIGHT,
-    WEATHER_COLUMNS,
-    add_lag_features,
-    make_features,
-    make_live_features,
-    score_against_history,
+    FEATURE_COLUMNS, LIVE_FEATURE_COLUMNS, WEATHER_COLUMNS, add_lag_features,
+    attach_supply_margin_scores, make_features, make_live_features,
+    month_hour_baseline, score_against_history, supply_margin,
 )
-from live_forecast import build_forecast_only_model
-
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_PATH = ROOT / "data" / "processed" / "train.csv"
@@ -34,62 +26,14 @@ DEMO_PATH = ROOT / "data" / "demo" / "demo_forecast.csv"
 DEMO_PREDICTION_PATH = OUTPUT_DIR / "demo_predictions.csv"
 BACKTEST_PATH = OUTPUT_DIR / "backtest_predictions.csv"
 METRICS_PATH = OUTPUT_DIR / "model_metrics.json"
-TARGETS = {
-    "smp": "predicted_smp",
-    "renewable_mwh": "predicted_renewable_mwh",
-}
+PRIMARY_TARGETS = ("renewable_mwh", "demand_mwh")
+ALL_TARGETS = ("smp", *PRIMARY_TARGETS)
 N_SPLITS = 5
-TEST_DAYS_PER_SPLIT = 30
-SMP_CORRECTION_WEIGHT = 0.75
+TEST_HOURS = 24 * 30
+DEMO_DATE = pd.Timestamp("2025-12-10")
 
 
-def build_model(target: str):
-    if target == "smp":
-        return ExtraTreesRegressor(
-            n_estimators=300,
-            min_samples_leaf=8,
-            max_features=0.8,
-            n_jobs=-1,
-            random_state=42,
-        )
-    return HistGradientBoostingRegressor(
-        max_iter=300,
-        learning_rate=0.05,
-        max_leaf_nodes=31,
-        l2_regularization=1.0,
-        random_state=42,
-    )
-
-
-def average_lag_baseline(frame: pd.DataFrame, target: str) -> pd.Series:
-    if target == "smp":
-        return (frame["smp_lag_24h"] + frame["smp_lag_168h"]) / 2
-    return (
-        frame["renewable_lag_24h"] + frame["renewable_lag_168h"]
-    ) / 2
-
-
-def fit_model(model, train_x, train_frame: pd.DataFrame, target: str):
-    """SMP는 강한 과거 기준의 오차만 AI가 보정하고, 재생에너지는 직접 예측한다."""
-    if target == "smp":
-        baseline = average_lag_baseline(train_frame, target)
-        model.fit(train_x, train_frame[target] - baseline)
-    else:
-        model.fit(train_x, train_frame[target])
-    return model
-
-
-def predict_model(model, test_x, test_frame: pd.DataFrame, target: str) -> np.ndarray:
-    prediction = model.predict(test_x)
-    if target == "smp":
-        baseline = average_lag_baseline(test_frame, target).to_numpy()
-        prediction = baseline + SMP_CORRECTION_WEIGHT * prediction
-    else:
-        prediction = np.maximum(prediction, 0)
-    return prediction
-
-
-def metric_dict(actual: pd.Series, prediction: pd.Series | np.ndarray) -> dict[str, float]:
+def metric_dict(actual, prediction) -> dict[str, float]:
     return {
         "mae": round(float(mean_absolute_error(actual, prediction)), 4),
         "rmse": round(float(mean_squared_error(actual, prediction) ** 0.5), 4),
@@ -97,292 +41,231 @@ def metric_dict(actual: pd.Series, prediction: pd.Series | np.ndarray) -> dict[s
     }
 
 
-def baseline_columns(frame: pd.DataFrame, target: str) -> dict[str, pd.Series]:
-    """미래를 보지 않고 만들 수 있는 현실적인 단순 예측 세 가지."""
-    if target == "smp":
-        lag24 = frame["smp_lag_24h"]
-        lag168 = frame["smp_lag_168h"]
+def green_time_overlap(actual, prediction, top_fraction: float = 0.30) -> float:
+    actual = np.asarray(actual, dtype=float)
+    prediction = np.asarray(prediction, dtype=float)
+    count = max(1, int(len(actual) * top_fraction))
+    overlap = set(np.argsort(actual)[-count:]) & set(np.argsort(prediction)[-count:])
+    return round(len(overlap) / count, 4)
+
+
+def _prepare_frame(raw: pd.DataFrame, target: str, live: bool):
+    frame = raw.dropna(subset=[target, *WEATHER_COLUMNS]).copy()
+    if live:
+        x = make_live_features(frame)
+        required = LIVE_FEATURE_COLUMNS
     else:
-        lag24 = frame["renewable_lag_24h"]
-        lag168 = frame["renewable_lag_168h"]
+        frame = add_lag_features(frame)
+        x = make_features(frame)
+        required = FEATURE_COLUMNS
+    valid = x[required].notna().all(axis=1) & frame[target].notna()
+    return frame.loc[valid].reset_index(drop=True), x.loc[valid].reset_index(drop=True)
+
+
+def _evaluate_mode(raw: pd.DataFrame, target: str, live: bool):
+    """앞 4개 구간으로 모델을 선택하고 마지막 30일은 성능 확인에만 씁니다."""
+    frame, x = _prepare_frame(raw, target, live)
+    splits = list(TimeSeriesSplit(n_splits=N_SPLITS, test_size=TEST_HOURS).split(frame))
+    candidates = ("extra_trees",) if target == "smp" else MODEL_CANDIDATES
+    candidate_parts = {name: [] for name in candidates}
+
+    for fold, (train_idx, test_idx) in enumerate(splits, start=1):
+        train_frame, test_frame = frame.iloc[train_idx], frame.iloc[test_idx]
+        baseline = month_hour_baseline(train_frame, target, test_frame).to_numpy()
+        for candidate in candidates:
+            model = build_model(target, candidate)
+            model.fit(x.iloc[train_idx], train_frame[target])
+            prediction = model.predict(x.iloc[test_idx])
+            if target != "smp":
+                prediction = np.maximum(prediction, 0)
+            candidate_parts[candidate].append(pd.DataFrame({
+                "timestamp": test_frame["timestamp"].to_numpy(),
+                "actual": test_frame[target].to_numpy(),
+                "prediction": prediction, "baseline": baseline, "fold": fold,
+            }))
+
+    all_results = {name: pd.concat(parts, ignore_index=True) for name, parts in candidate_parts.items()}
+    leaderboard = []
+    for candidate, result in all_results.items():
+        selection = result[result["fold"] < N_SPLITS]
+        leaderboard.append({
+            "model": candidate,
+            "selection_mae": round(float(mean_absolute_error(selection["actual"], selection["prediction"])), 4),
+            "selection_rows": int(len(selection)),
+        })
+    leaderboard.sort(key=lambda row: row["selection_mae"])
+    winner = str(leaderboard[0]["model"])
+    selected = all_results[winner]
+    holdout = selected[selected["fold"] == N_SPLITS].copy()
+    baseline_metrics = metric_dict(holdout["actual"], holdout["baseline"])
+    ai_metrics = metric_dict(holdout["actual"], holdout["prediction"])
+    calibration = selected[selected["fold"] < N_SPLITS]
+    half_width = float(np.quantile(np.abs(calibration["actual"] - calibration["prediction"]), 0.90))
+    coverage = float(((holdout["actual"] >= holdout["prediction"] - half_width) &
+                      (holdout["actual"] <= holdout["prediction"] + half_width)).mean())
+    details = {
+        "selected_model": winner,
+        "selection_method": "앞 4개 시간 구간 MAE 최소 모델 선택, 마지막 30일 별도 검증",
+        "candidate_leaderboard": leaderboard,
+        "ai": ai_metrics, "baseline_month_hour": baseline_metrics,
+        "mae_improvement_percent": round(
+            100 * (baseline_metrics["mae"] - ai_metrics["mae"]) / baseline_metrics["mae"], 2),
+        "approx_90_interval_half_width": round(half_width, 4),
+        "last_fold_interval_coverage": round(coverage, 4),
+        "holdout_rows": int(len(holdout)), "training_rows_available": int(len(frame)),
+    }
+    return selected, details, winner
+
+
+def _select_green_blend(renewable: pd.DataFrame, demand: pd.DataFrame) -> dict[str, float]:
+    """마지막 홀드아웃을 보지 않고 Green Time 상위 30% 일치율이 높은 혼합비를 고릅니다."""
+    paired = renewable.merge(demand, on=["timestamp", "fold"], suffixes=("_r", "_d"))
+    selection = paired[paired["fold"] < N_SPLITS]
+    actual = supply_margin(selection["actual_r"], selection["actual_d"])
+    choices = []
+    for renewable_alpha in np.linspace(0, 1, 11):
+        for demand_alpha in np.linspace(0, 1, 11):
+            predicted = supply_margin(
+                renewable_alpha * selection["prediction_r"] + (1 - renewable_alpha) * selection["baseline_r"],
+                demand_alpha * selection["prediction_d"] + (1 - demand_alpha) * selection["baseline_d"],
+            )
+            choices.append((
+                green_time_overlap(actual, predicted),
+                float(mean_absolute_error(actual, predicted)),
+                float(renewable_alpha), float(demand_alpha),
+            ))
+    # 일치율 최대, 같은 경우 공급비율 오차 최소
+    best = sorted(choices, key=lambda row: (-row[0], row[1]))[0]
     return {
-        "24_hours_ago": lag24,
-        "168_hours_ago": lag168,
-        "average_24_168": (lag24 + lag168) / 2,
+        "renewable_ai_alpha": best[2], "demand_ai_alpha": best[3],
+        "selection_top_30_overlap": best[0], "selection_supply_margin_mae": round(best[1], 6),
     }
 
 
-def train() -> tuple[pd.DataFrame, dict]:
-    raw = pd.read_csv(DATA_PATH, parse_dates=["timestamp"]).sort_values("timestamp")
-    frame = (
-        add_lag_features(raw)
-        .dropna(subset=[*WEATHER_COLUMNS, *LAG_COLUMNS])
-        .reset_index(drop=True)
-    )
-    if frame.isna().any().any():
-        raise ValueError("학습 데이터에 빈칸이 있습니다. validate_data.py를 먼저 실행하세요.")
-
-    features = make_features(frame)
-    live_features = make_live_features(frame)
-    test_size = 24 * TEST_DAYS_PER_SPLIT
-    splitter = TimeSeriesSplit(n_splits=N_SPLITS, test_size=test_size)
-    backtest_parts: list[pd.DataFrame] = []
-    fold_boundaries: list[dict[str, object]] = []
-
-    for fold_number, (train_index, test_index) in enumerate(splitter.split(features), start=1):
-        train_frame = frame.iloc[train_index]
-        test_frame = frame.iloc[test_index]
-        fold_result = test_frame[["timestamp", "smp", "renewable_mwh"]].copy()
-        fold_result["fold"] = fold_number
-
-        for target, output_column in TARGETS.items():
-            model = build_model(target)
-            fit_model(model, features.iloc[train_index], train_frame, target)
-            prediction = predict_model(
-                model, features.iloc[test_index], test_frame, target
-            )
-            fold_result[output_column] = prediction
-            forecast_only_model = build_forecast_only_model(target)
-            forecast_only_model.fit(
-                live_features.iloc[train_index], train_frame[target]
-            )
-            forecast_only_prediction = forecast_only_model.predict(
-                live_features.iloc[test_index]
-            )
-            if target == "renewable_mwh":
-                forecast_only_prediction = np.maximum(forecast_only_prediction, 0)
-            fold_result[f"forecast_only_{output_column}"] = forecast_only_prediction
-            for name, values in baseline_columns(test_frame, target).items():
-                fold_result[f"{target}_baseline_{name}"] = values.to_numpy()
-
-        fold_boundaries.append(
-            {
-                "fold": fold_number,
-                "train_start": str(train_frame["timestamp"].min()),
-                "train_end": str(train_frame["timestamp"].max()),
-                "test_start": str(test_frame["timestamp"].min()),
-                "test_end": str(test_frame["timestamp"].max()),
-                "test_rows": len(test_frame),
-            }
-        )
-        backtest_parts.append(fold_result)
-
-    backtest = pd.concat(backtest_parts, ignore_index=True).sort_values("timestamp")
-    metrics: dict[str, object] = {
-        "data_rows_after_lag": len(frame),
-        "validation": {
-            "method": "5-fold rolling time-series backtest",
-            "test_days_per_fold": TEST_DAYS_PER_SPLIT,
-            "total_test_rows": len(backtest),
-            "folds": fold_boundaries,
-        },
-        "note": "24시간 전·168시간 전 값만 사용하며 미래값은 입력하지 않음",
-        "score_weights": {
-            "renewable": RENEWABLE_WEIGHT,
-            "market_smp": MARKET_WEIGHT,
-            "note": "재생에너지는 핵심 신호, SMP는 소비자 요금이 아닌 보조 시장지표",
-        },
-        "targets": {},
-        "forecast_only_targets": {},
-    }
-
-    last_fold_number = int(backtest["fold"].max())
-    calibration = backtest[backtest["fold"] < last_fold_number]
-    last_fold = backtest[backtest["fold"] == last_fold_number]
-
-    for target, output_column in TARGETS.items():
-        target_metrics: dict[str, object] = {
-            "ai": metric_dict(backtest[target], backtest[output_column]),
-            "baselines": {},
-        }
-        for name in ("24_hours_ago", "168_hours_ago", "average_24_168"):
-            column = f"{target}_baseline_{name}"
-            target_metrics["baselines"][name] = metric_dict(
-                backtest[target], backtest[column]
-            )
-        best_name = min(
-            target_metrics["baselines"],
-            key=lambda name: target_metrics["baselines"][name]["mae"],
-        )
-        best_mae = target_metrics["baselines"][best_name]["mae"]
-        ai_mae = target_metrics["ai"]["mae"]
-        target_metrics["best_baseline"] = best_name
-        target_metrics["mae_improvement_percent"] = round(
-            100 * (best_mae - ai_mae) / best_mae, 2
-        )
-
-        calibration_error = np.abs(
-            calibration[target] - calibration[output_column]
-        )
-        interval_half_width = float(np.quantile(calibration_error, 0.90))
-        lower = last_fold[output_column] - interval_half_width
-        upper = last_fold[output_column] + interval_half_width
-        coverage = float(
-            ((last_fold[target] >= lower) & (last_fold[target] <= upper)).mean()
-        )
-        target_metrics["approx_90_interval_half_width"] = round(interval_half_width, 4)
-        target_metrics["last_fold_interval_coverage"] = round(coverage, 4)
-        metrics["targets"][target] = target_metrics
-
-        # 오늘 예보 실험 모드는 미래에 알 수 있는 시간·날씨만 사용한다.
-        live_output_column = f"forecast_only_{output_column}"
-        live_metrics: dict[str, object] = {
-            "ai": metric_dict(backtest[target], backtest[live_output_column]),
-            "note": "과거 관측날씨 기준 검증이며 실제 기상예보 오차는 포함하지 않음",
-        }
-        live_calibration_error = np.abs(
-            calibration[target] - calibration[live_output_column]
-        )
-        live_interval_half_width = float(
-            np.quantile(live_calibration_error, 0.90)
-        )
-        live_last_lower = last_fold[live_output_column] - live_interval_half_width
-        live_last_upper = last_fold[live_output_column] + live_interval_half_width
-        live_coverage = float(
-            (
-                (last_fold[target] >= live_last_lower)
-                & (last_fold[target] <= live_last_upper)
-            ).mean()
-        )
-        live_metrics["approx_90_interval_half_width"] = round(
-            live_interval_half_width, 4
-        )
-        live_metrics["last_fold_interval_coverage"] = round(live_coverage, 4)
-        metrics["forecast_only_targets"][target] = live_metrics
-
-    # 2025-12-10은 마지막 시험 구간에 속하므로 모델이 해당 정답을 학습하지 않았다.
-    demo_date = pd.Timestamp("2025-12-10").date()
-    demo_prediction = backtest[
-        backtest["timestamp"].dt.date == demo_date
-    ].copy()
-    demo_source = frame[frame["timestamp"].dt.date == demo_date].copy()
-    if len(demo_prediction) != 24:
-        raise ValueError("발표용 2025-12-10 예측 24개를 만들지 못했습니다.")
-
-    weather_columns = [
-        "temperature_2m",
-        "relative_humidity_2m",
-        "wind_speed_10m",
-        "shortwave_radiation",
-    ]
-    result = demo_prediction[
-        ["timestamp", "smp", "renewable_mwh", "predicted_smp", "predicted_renewable_mwh"]
-    ].rename(
-        columns={"smp": "actual_smp", "renewable_mwh": "actual_renewable_mwh"}
-    )
-    result = result.merge(demo_source[["timestamp", *weather_columns]], on="timestamp")
-
-    smp_interval = metrics["targets"]["smp"]["approx_90_interval_half_width"]
-    renewable_interval = metrics["targets"]["renewable_mwh"][
-        "approx_90_interval_half_width"
-    ]
-    result["predicted_smp_lower"] = result["predicted_smp"] - smp_interval
-    result["predicted_smp_upper"] = result["predicted_smp"] + smp_interval
-    result["predicted_renewable_lower"] = np.maximum(
-        result["predicted_renewable_mwh"] - renewable_interval, 0
-    )
-    result["predicted_renewable_upper"] = (
-        result["predicted_renewable_mwh"] + renewable_interval
-    )
-
-    # 하루 안의 상대평가가 아니라 2025년 과거 분포를 기준으로 점수를 계산한다.
-    history_for_score = frame[frame["timestamp"] < pd.Timestamp("2025-12-10")]
-    result["price_opportunity_score"] = score_against_history(
-        result["predicted_smp"], history_for_score["smp"], higher_is_better=False
-    ).round(1)
-    result["renewable_opportunity_score"] = score_against_history(
-        result["predicted_renewable_mwh"],
-        history_for_score["renewable_mwh"],
-        higher_is_better=True,
-    ).round(1)
-    result["green_score"] = (
-        MARKET_WEIGHT * result["price_opportunity_score"]
-        + RENEWABLE_WEIGHT * result["renewable_opportunity_score"]
-    ).round(1)
-
-    # 예보가 틀려도 무리한 추천을 하지 않도록 불리한 경우를 기준으로 한 보수적 점수.
-    # 가격은 예상 상한(더 비싼 경우), 재생에너지는 예상 하한(더 적은 경우)을 사용한다.
-    result["conservative_price_score"] = score_against_history(
-        result["predicted_smp_upper"],
-        history_for_score["smp"],
-        higher_is_better=False,
-    ).round(1)
-    result["conservative_renewable_score"] = score_against_history(
-        result["predicted_renewable_lower"],
-        history_for_score["renewable_mwh"],
-        higher_is_better=True,
-    ).round(1)
-    result["planning_score"] = (
-        MARKET_WEIGHT * result["conservative_price_score"]
-        + RENEWABLE_WEIGHT * result["conservative_renewable_score"]
-    ).round(1)
-    result["forecast_risk_points"] = (
-        result["green_score"] - result["planning_score"]
-    ).clip(lower=0).round(1)
-
-    # 과거 재현 데모에서만 알 수 있는 실제 결과 점수다. 미래 서비스에서는
-    # 충전이 끝난 뒤 관측값이 들어왔을 때 성과형 보너스를 정산하는 데 사용한다.
-    result["actual_price_score"] = score_against_history(
-        result["actual_smp"], history_for_score["smp"], higher_is_better=False
-    ).round(1)
-    result["actual_renewable_score"] = score_against_history(
-        result["actual_renewable_mwh"],
-        history_for_score["renewable_mwh"],
-        higher_is_better=True,
-    ).round(1)
-    result["actual_green_score"] = (
-        MARKET_WEIGHT * result["actual_price_score"]
-        + RENEWABLE_WEIGHT * result["actual_renewable_score"]
-    ).round(1)
-
+def train():
+    raw = pd.read_csv(DATA_PATH, parse_dates=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+    required = {"demand_mwh", "renewable_mwh", *WEATHER_COLUMNS}
+    missing = required - set(raw.columns)
+    if missing or raw[list(required)].isna().any().any():
+        raise ValueError(f"핵심 학습 데이터 누락 또는 결측: {sorted(missing)}")
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    for target in TARGETS:
-        final_model = build_model(target)
-        fit_model(final_model, features, frame, target)
-        joblib.dump(
-            {
-                "model": final_model,
-                "features": FEATURE_COLUMNS,
-                "target": target,
-                "trained_until": str(frame["timestamp"].max()),
-                "validation": metrics["validation"]["method"],
-                "approach": (
-                    "average-lag baseline + AI residual correction"
-                    if target == "smp"
-                    else "direct prediction"
-                ),
-                "smp_correction_weight": (
-                    SMP_CORRECTION_WEIGHT if target == "smp" else None
-                ),
-            },
-            MODEL_DIR / f"{target}_model.joblib",
+    DEMO_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    metrics = {
+        "data_rows_total": int(len(raw)), "additional_rows_vs_2025": int(len(raw) - 8760),
+        "data_period": {"start": str(raw["timestamp"].min()), "end": str(raw["timestamp"].max())},
+        "official_demand_rows": int(raw["demand_mwh"].notna().sum()),
+        "smp_rows": int(raw.get("smp", pd.Series(dtype=float)).notna().sum()),
+        "demand_source": "KPX 제주 전력수급현황 계통수요(단위 정규화 완료)",
+        "validation": {"method": "rolling time-series; folds 1-4 model selection, final 30-day holdout", "splits": N_SPLITS, "test_hours_per_split": TEST_HOURS},
+        "score_weights": {"renewable_supply_margin": 1.0, "market_smp": 0.0,
+                          "note": "Green Score는 예측 재생에너지/예측 수요의 과거 백분위이며 SMP는 사용하지 않음"},
+        "targets": {}, "forecast_only_targets": {},
+    }
+    backtests = {"full": {}, "live": {}}
+    for target in ALL_TARGETS:
+        if target == "smp" and ("smp" not in raw or not raw["smp"].notna().any()):
+            continue
+        for mode, live in (("full", False), ("live", True)):
+            evaluated, details, winner = _evaluate_mode(raw, target, live)
+            backtests[mode][target] = evaluated
+            bucket = "forecast_only_targets" if live else "targets"
+            if live:
+                details["note"] = "시간·기상예보형 입력 검증이며 실제 날씨예보 오차는 별도"
+            metrics[bucket][target] = details
+            frame, x = _prepare_frame(raw, target, live)
+            final_model = build_model(target, winner)
+            final_model.fit(x, frame[target])
+            joblib.dump(final_model, MODEL_DIR / f"{target.replace('_mwh', '')}_{mode}.joblib")
+
+    blend = _select_green_blend(
+        backtests["live"]["renewable_mwh"], backtests["live"]["demand_mwh"]
+    )
+    for target, alpha_key in (("renewable_mwh", "renewable_ai_alpha"), ("demand_mwh", "demand_ai_alpha")):
+        alpha = blend[alpha_key]
+        selected = backtests["live"][target]
+        selected["prediction"] = alpha * selected["prediction"] + (1 - alpha) * selected["baseline"]
+        holdout = selected[selected["fold"] == N_SPLITS]
+        calibration = selected[selected["fold"] < N_SPLITS]
+        ai_metrics = metric_dict(holdout["actual"], holdout["prediction"])
+        baseline_metrics = metric_dict(holdout["actual"], holdout["baseline"])
+        half_width = float(np.quantile(np.abs(calibration["actual"] - calibration["prediction"]), 0.90))
+        coverage = float(((holdout["actual"] >= holdout["prediction"] - half_width) &
+                          (holdout["actual"] <= holdout["prediction"] + half_width)).mean())
+        detail = metrics["forecast_only_targets"][target]
+        detail["blend_alpha_ai"] = alpha
+        detail["ai"] = ai_metrics
+        detail["baseline_month_hour"] = baseline_metrics
+        detail["mae_improvement_percent"] = round(
+            100 * (baseline_metrics["mae"] - ai_metrics["mae"]) / baseline_metrics["mae"], 2
         )
+        detail["approx_90_interval_half_width"] = round(half_width, 4)
+        detail["last_fold_interval_coverage"] = round(coverage, 4)
+
+    base = backtests["live"]["renewable_mwh"].query("fold == @N_SPLITS").copy()
+    backtest = base.rename(columns={"actual": "renewable_mwh", "prediction": "live_renewable_mwh", "baseline": "baseline_renewable_mwh"})
+    for target in ("demand_mwh", "smp"):
+        part = backtests["live"][target].query("fold == @N_SPLITS").copy()
+        part = part.rename(columns={"actual": target, "prediction": f"live_{target}", "baseline": f"baseline_{target}"})
+        backtest = backtest.merge(part.drop(columns="fold"), on="timestamp", how="left")
+    for target in ALL_TARGETS:
+        part = backtests["full"][target].query("fold == @N_SPLITS")[["timestamp", "prediction"]]
+        backtest = backtest.merge(part.rename(columns={"prediction": f"full_{target}"}), on="timestamp", how="left")
+
+    actual_margin = supply_margin(backtest["renewable_mwh"], backtest["demand_mwh"])
+    predicted_margin = supply_margin(backtest["live_renewable_mwh"], backtest["live_demand_mwh"])
+    baseline_margin = supply_margin(backtest["baseline_renewable_mwh"], backtest["baseline_demand_mwh"])
+    metrics["green_time"] = {
+        "evaluation_rows": int(len(backtest)),
+        "definition": "percentile(predicted renewable / predicted demand) versus historical distribution",
+        "supply_margin_mae_ai": round(float(mean_absolute_error(actual_margin, predicted_margin)), 6),
+        "supply_margin_mae_baseline": round(float(mean_absolute_error(actual_margin, baseline_margin)), 6),
+        "top_30_percent_overlap_ai": green_time_overlap(actual_margin, predicted_margin),
+        "top_30_percent_overlap_baseline": green_time_overlap(actual_margin, baseline_margin),
+        "deployment_blend": blend,
+    }
+
+    demo = backtest[backtest["timestamp"].dt.normalize() == DEMO_DATE].copy()
+    if len(demo) != 24:
+        raise ValueError("발표용 2025-12-10 예측 24개를 만들지 못했습니다.")
+    source = raw[raw["timestamp"].dt.normalize() == DEMO_DATE][["timestamp", *WEATHER_COLUMNS]]
+    result = pd.DataFrame({
+        "timestamp": demo["timestamp"], "actual_smp": demo["smp"],
+        "actual_renewable_mwh": demo["renewable_mwh"], "actual_demand_mwh": demo["demand_mwh"],
+        "predicted_smp": demo["live_smp"], "predicted_renewable_mwh": demo["live_renewable_mwh"],
+        "predicted_demand_mwh": demo["live_demand_mwh"],
+    }).merge(source, on="timestamp")
+    for target, center, prefix in (
+        ("smp", "predicted_smp", "predicted_smp"),
+        ("renewable_mwh", "predicted_renewable_mwh", "predicted_renewable"),
+        ("demand_mwh", "predicted_demand_mwh", "predicted_demand"),
+    ):
+        half_width = metrics["forecast_only_targets"][target]["approx_90_interval_half_width"]
+        result[f"{prefix}_lower"] = result[center] - half_width
+        result[f"{prefix}_upper"] = result[center] + half_width
+        if target != "smp":
+            result[f"{prefix}_lower"] = result[f"{prefix}_lower"].clip(lower=0)
+
+    history = raw[raw["timestamp"] < DEMO_DATE]
+    result = attach_supply_margin_scores(result, history)
+    actual_margin_demo = supply_margin(result["actual_renewable_mwh"], result["actual_demand_mwh"])
+    historical_margin = supply_margin(history["renewable_mwh"], history["demand_mwh"])
+    result["actual_green_score"] = score_against_history(actual_margin_demo, historical_margin, True).round(1)
+    result["actual_price_score"] = score_against_history(result["actual_smp"], history["smp"], False).round(1)
+    result["actual_renewable_score"] = score_against_history(result["actual_renewable_mwh"], history["renewable_mwh"], True).round(1)
 
     result.to_csv(DEMO_PREDICTION_PATH, index=False, encoding="utf-8-sig")
     backtest.to_csv(BACKTEST_PATH, index=False, encoding="utf-8-sig")
-    demo_source.to_csv(DEMO_PATH, index=False, encoding="utf-8-sig")
-    METRICS_PATH.write_text(
-        json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    raw[raw["timestamp"].dt.normalize() == DEMO_DATE].to_csv(DEMO_PATH, index=False, encoding="utf-8-sig")
+    METRICS_PATH.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
     return result, metrics
 
 
 if __name__ == "__main__":
-    predictions, evaluation = train()
-    print("\n=== 강화된 AI 모델 학습 완료 ===")
-    print("검증: 서로 다른 5개 기간 × 각 30일")
-    for target, values in evaluation["targets"].items():
-        best = values["best_baseline"]
-        print(f"\n[{target}]")
-        print(f"AI MAE: {values['ai']['mae']}")
-        print(f"가장 강한 단순 기준: {best}")
-        print(f"단순 기준 MAE: {values['baselines'][best]['mae']}")
-        print(f"공정한 개선율: {values['mae_improvement_percent']}%")
-        print(
-            "약 90% 예측범위 반폭: "
-            f"±{values['approx_90_interval_half_width']}"
-        )
-    print(f"\n발표용 24시간 예측: {DEMO_PREDICTION_PATH}")
-    print(f"전체 백테스트 예측: {BACKTEST_PATH}")
-    print(f"평가 결과: {METRICS_PATH}")
+    _, evaluation = train()
+    print("다년도 모델 선택·학습 및 최종 홀드아웃 검증 완료")
+    print(f"총 {evaluation['data_rows_total']:,}시간 / 추가 {evaluation['additional_rows_vs_2025']:,}시간")
+    for target, values in evaluation["forecast_only_targets"].items():
+        print(f"{target}: {values['selected_model']}, holdout MAE={values['ai']['mae']}, baseline={values['baseline_month_hour']['mae']}, 개선율={values['mae_improvement_percent']}%")
+    print("Green Time:", evaluation["green_time"])

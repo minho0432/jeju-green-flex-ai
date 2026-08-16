@@ -2,7 +2,7 @@
 
 제주 개인 전기차 사용자가 출발 전 목표 배터리를 채우면서, 재생에너지 활용에 유리한 시간에 충전하고 Green Point 혜택을 받을 수 있도록 돕는 해커톤 MVP입니다.
 
-> 핵심 가치는 두 가지입니다. **친환경 시간 선택**은 재생에너지 예측이 담당하고, **사용자 가격 혜택**은 Green Point가 담당합니다. SMP는 소비자 충전요금이 아니라 추천을 보조하는 전력시장 지표입니다.
+> 핵심 가치는 두 가지입니다. **친환경 시간 선택**은 재생에너지 발전량과 제주 전력수요 예측이 담당하고, **사용자 가격 혜택**은 Green Point가 담당합니다. SMP는 소비자 요금이 아니므로 Green Score에는 넣지 않습니다.
 
 ## 사용자가 보는 결과
 
@@ -11,7 +11,7 @@
 - 출발 전 목표 배터리를 채울 수 있는지
 - 추천하는 연속 충전시간
 - 예상 Green Point
-- 추천시간의 재생에너지 기회와 SMP 보조지표
+- 추천시간의 재생에너지 공급여력과 참고용 SMP
 - 예측이 틀릴 가능성을 고려한 보수적 결과
 
 ## 네 가지 시연 모드
@@ -42,15 +42,16 @@ DATA_GO_KR_SERVICE_KEY = "발급받은_일반인증키"
 
 실제 키를 GitHub, 카카오톡, 이 대화창에 올리면 안 됩니다. 앱은 개발계정의 하루 100회 제한을 보호하기 위해 API 결과를 20분 동안 저장합니다. 따라서 일반 새로고침은 즉시 추가 호출하지 않으며 최대 약 20분 이내 자료를 보여 줄 수 있습니다.
 
-## Green Score와 SMP
+## Green Score
 
 ```text
-Green Score = 재생에너지 기회점수 × 80% + SMP 시장기회점수 × 20%
+시간별 공급여력 = 예측 태양광·풍력 발전량 ÷ 예측 제주 전력수요
+Green Score = 공급여력을 과거와 비교한 백분위 점수(0~100)
 ```
 
-- 재생에너지 기회점수: 과거보다 태양광·풍력 발전량이 많을수록 높습니다.
-- SMP 시장기회점수: 과거보다 제주 전력시장의 시간별 도매가격 지표가 낮을수록 높습니다.
-- SMP가 낮아도 소비자가 내는 충전요금이 자동으로 싸지는 것은 아닙니다.
+- 발전량이 많아도 수요가 더 많으면 점수가 무조건 높아지지 않습니다.
+- 70점은 해당 시간이 과거 비교 구간의 약 70%보다 공급여력이 높다는 뜻입니다.
+- SMP는 소비자가 내는 충전요금이 아니므로 점수와 충전시간 추천에 사용하지 않습니다.
 
 가격절약은 SMP를 충전요금으로 바꾸어 계산하지 않고, 제휴사가 제공한다고 가정한 Green Point로 따로 표현합니다.
 
@@ -82,14 +83,14 @@ Green Score = 재생에너지 기회점수 × 80% + SMP 시장기회점수 × 20
 
 ## AI 검증 결과
 
-시간순서를 지킨 5회 백테스트에서 서로 다른 기간을 각각 30일씩 시험했습니다. 전체 시험시간은 3,600시간입니다.
+2023~2025년 25,559시간을 사용했습니다. 앞선 4개 시간 구간으로 후보 모델과 혼합비를 선택하고, 마지막 30일 720시간은 선택에 쓰지 않고 최종 확인했습니다.
 
 | 대상 | 검증 AI MAE | 가장 강한 단순 기준 MAE | 개선율 |
 |---|---:|---:|---:|
-| SMP | 10.7418원/kWh | 11.2154 | 4.22% |
-| 재생에너지 | 10.9011MWh | 15.7213 | 30.66% |
+| 재생에너지 | 37.353MWh | 39.297MWh | 4.95% |
+| 제주 전력수요 | 22.4568MWh | 41.9477MWh | 46.46% |
 
-MAE는 예측과 실제의 평균적인 차이이며 작을수록 좋습니다. 내일 예보용 모델은 미래에 알 수 있는 시간·날씨만 사용하며, 과거 관측날씨 기준 MAE는 SMP 14.1874원/kWh, 재생에너지 11.9452MWh입니다. 이 수치에는 실제 기상예보 오차가 포함되지 않습니다.
+MAE는 예측과 실제의 평균적인 차이이며 작을수록 좋습니다. 공급여력 MAE는 0.0531로 월·시간 기준 0.0569보다 낮았습니다. Green Time 상위 30% 일치율은 양쪽 모두 92.13%였습니다. 이 수치에는 실제 기상예보 자체의 오차가 포함되지 않습니다.
 
 ## 가장 쉬운 실행 방법
 
@@ -118,7 +119,7 @@ python scripts/validate_ai.py
 python -m unittest discover -s tests -v
 ```
 
-현재 자동검사는 데이터 8,760행, AI 결과 24시간, 목표 SOC 달성, 80:20 점수, 예산 기반 단가, 3단계 보너스, 포인트 상한, 예보 실패 대응, 실시간 보정의 미래값 차단, MW→MWh 단위 변환, 11/12 불완전 시간 차단, 공공데이터포털 XML 오류 해석을 확인합니다.
+현재 자동검사는 데이터 25,559행, AI 결과 24시간, 공급여력 100% 점수, 목표 SOC 달성, 예산 기반 단가, 3단계 보너스, 포인트 상한, 예보 실패 대응, 실시간 보정의 미래값 차단, MW→MWh 단위 변환과 원본 누락 구간의 잘못된 시차 생성을 확인합니다.
 
 ## 주요 파일
 
@@ -126,8 +127,9 @@ python -m unittest discover -s tests -v
 |---|---|
 | `scripts/prepare_data.py` | 원본 데이터 통합 |
 | `scripts/validate_data.py` | 데이터 품질 검사 |
-| `scripts/model_utils.py` | AI 입력 특징과 80:20 점수 계산 |
-| `scripts/train_models.py` | 모델 학습·5회 백테스트·예측범위 생성 |
+| `scripts/model_utils.py` | AI 입력 특징과 공급여력 점수 계산 |
+| `scripts/train_models.py` | 후보 모델 비교·선택·최종 홀드아웃 검증 |
+| `scripts/build_multiyear_data.py` | 2023~2025년 공식 자료 병합·단위 통일 |
 | `scripts/live_forecast.py` | Open-Meteo 내일 예보 조회와 실험용 예측 |
 | `scripts/jeju_grid_live.py` | KPX 제주 5분 실측 조회·검증·MW→시간별 MWh 변환 |
 | `scripts/realtime_adjustment.py` | 도착 실측으로 미래 예측 보정·5분 MW를 시간별 MWh로 변환 |
@@ -142,8 +144,8 @@ python -m unittest discover -s tests -v
 
 ### 구현 완료
 
-- 2025년 제주 시간별 데이터 8,760행 검사
-- 두 AI 모델과 5회 시간순 백테스트
+- 2023~2025년 제주 시간별 데이터 25,559행 검사
+- 발전량·전력수요 후보 모델 비교와 마지막 30일 홀드아웃 검증
 - 약 90% 예상범위와 보수적 점수
 - 목표 SOC·출발시간·충전출력을 지키는 연속 시간 추천
 - 검증된 과거 재현과 내일 기상예보 실험 모드
@@ -160,13 +162,14 @@ python -m unittest discover -s tests -v
 - 충전기 예약 또는 원격제어
 - HVDC·개별 발전기 고장/정비·출력제어 예고
 - 실시간 SMP 관측 또는 소비자 실제 충전요금 연동
-- 다년도 학습과 과거 기상예보 원본을 이용한 완전한 실시간 검증
+- 과거에 실제 발표된 기상예보 원본을 이용한 완전한 예보 성능 검증
 - 공식 탄소감축·REC 인증
 
 ## 문서
 
 - [TEAM_EXPLANATION.md](TEAM_EXPLANATION.md): 비전공자용 전체 해설과 팀 공유 대본
 - [MODEL_CARD.md](MODEL_CARD.md): 모델 구조·검증·한계
+- [docs/MULTIYEAR_DATA.md](docs/MULTIYEAR_DATA.md): 다년도 데이터 출처·단위·결측 처리
 - [CHANGELOG.md](CHANGELOG.md): 무엇이 바뀌었는지
 - [data_dictionary.md](data_dictionary.md): 데이터 열 설명
 
@@ -174,6 +177,8 @@ python -m unittest discover -s tests -v
 
 - 제주 SMP: https://epsis.kpx.or.kr/epsisnew/selectEkmaSmpSmpChart.do?menuId=040202
 - 제주 연료원별 발전량: https://www.data.go.kr/data/15138838/fileData.do
+- 지역별 시간별 태양광·풍력: https://www.data.go.kr/tcs/dss/selectFileDataDetailView.do?publicDataPk=15065269
+- 제주 시간별 계통수요: https://www.data.go.kr/data/15065239/fileData.do?recommendDataYn=Y
 - 과거 날씨: https://open-meteo.com/en/docs/historical-weather-api
 - 내일 날씨예보: https://open-meteo.com/en/docs/gfs-api
 - 제주 5분 계통·신재생 실측: https://www.data.go.kr/data/15158505/openapi.do
