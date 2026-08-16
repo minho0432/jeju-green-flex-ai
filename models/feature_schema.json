@@ -1,0 +1,4 @@
+{
+  "live_features": ["hour", "dayofweek", "month", "is_weekend", "temperature_2m", "relative_humidity_2m", "wind_speed_10m", "shortwave_radiation"],
+  "note": "exact columns may include extra calendar/weather features from make_live_features"
+}
