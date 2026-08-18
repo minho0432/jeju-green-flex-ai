@@ -70,6 +70,7 @@ ERROR_GUIDANCE = {
     "04": "호출 주소 또는 요청 방식이 허용되지 않았습니다.",
     "05": "공공데이터포털 또는 제공기관 응답이 지연되고 있습니다.",
     "10": "요청 날짜나 페이지 파라미터 형식이 올바르지 않습니다.",
+    "11": "필수 요청값인 기준일(baseDate)이 빠졌습니다.",
     "12": "요청한 API 서비스 주소가 변경됐거나 존재하지 않습니다.",
     "20": "이 API의 활용신청·승인 상태와 Streamlit Secrets의 인증키를 확인하세요.",
     "22": "오늘의 API 호출한도를 초과했습니다. 한도 초기화 후 다시 시도하세요.",
@@ -277,8 +278,9 @@ def fetch_jeju_grid_live(
 ) -> pd.DataFrame:
     """오늘의 제주 5분 관측값을 호출하고 실패 원인을 구분한다.
 
-    일반 실시간 호출은 신규 GW의 기준일 없는 요청을 먼저 사용한다. GW가
-    0건이거나 일시적으로 실패하면, 같은 태양광·풍력 필드를 제공하는 KPX의
+    실제 GW는 문서의 선택 표기와 달리 기준일을 요구하므로 한국시간 오늘
+    날짜를 명시해 요청한다. GW가 0건이거나 일시적으로 실패하면, 같은
+    태양광·풍력 필드를 제공하는 KPX의
     구형 공식 XML 주소를 한 번만 대체 호출한다. 이 방식은 호출당 최대 2회라
     앱의 60분 오류 캐시와 함께 개발계정 일 100회 한도를 넘지 않는다.
 
@@ -289,7 +291,7 @@ def fetch_jeju_grid_live(
         raise ValueError("API 제한시간은 0보다 커야 합니다.")
     if base_date is None:
         requests = [
-            ("신규 GW", build_request_url(service_key, include_base_date=False)),
+            ("신규 GW", build_request_url(service_key, include_base_date=True)),
             ("구형 KPX XML", build_legacy_request_url(service_key)),
         ]
     else:
