@@ -17,6 +17,8 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "scripts"))
 
+from reward_policy import calculate_green_point  # noqa: E402
+
 from live_forecast import (  # noqa: E402
     build_live_prediction,
     fetch_open_meteo_forecast,
@@ -427,6 +429,13 @@ score_col = plan.get("score_column") or "green_score"
 plot_df = forecast.sort_values("timestamp")
 if score_col not in plot_df.columns:
     score_col = "green_score" if "green_score" in plot_df.columns else plot_df.columns[-1]
+    
+reward_schedule = used.rename(columns={score_col: "score"}).copy()
+
+green_point_result = calculate_green_point(
+    reward_schedule,
+    base_rate=100.0,
+)
 
 if used.empty:
     st.markdown(
@@ -452,17 +461,32 @@ else:
     <span class="chip">도착 약 {plan['reached_soc']:.0f}%</span>
     <span class="chip">{plan['required_grid_kwh']:.0f} kWh</span>
     <span class="chip">친환경 {avg_score:.0f}점</span>
+    <span class="chip">예상 {green_point_result['expected_points']:,}P</span>
   </div>
 </div>
 """,
         unsafe_allow_html=True,
     )
 
-k1, k2, k3, k4 = st.columns(4)
+k1, k2, k3, k4, k5 = st.columns(5)
 k1.metric("시작(적용)", f"{effective_start}시")
 k2.metric("출발", f"{departure_hour}시")
 k3.metric("충전기", f"{charger_kw:g} kW")
 k4.metric("최고 점수", f"{float(plot_df[score_col].max()):.0f}")
+k5.metric("예상 Green Point", f"{green_point_result['expected_points']:,}P")
+
+st.caption(
+    f"리워드 대상 {green_point_result['eligible_kwh']:.1f} kWh · "
+    f"가중 평균 Green Score {green_point_result['weighted_score']:.1f}점 · "
+    "100P/kWh 기준 MVP 예시 정책"
+)
+
+if green_point_result["expected_points"] == 0:
+    st.info(
+        "현재 추천 구간에는 Green Score 70점 이상 시간이 없어 "
+        "Green Point 대상 충전량이 없습니다. "
+        "목표 배터리 달성을 우선해 충전 일정을 추천했습니다."
+    )
 
 st.markdown('<p class="section-title">📊 Green 점수 · 추천 구간</p>', unsafe_allow_html=True)
 st.plotly_chart(
