@@ -247,7 +247,15 @@ def parse_api_response(payload: str | bytes | dict[str, Any]) -> pd.DataFrame:
             f"제주 실시간 API 응답에 필요한 열이 없습니다: {sorted(missing)}"
         )
     frame = frame[REQUIRED_COLUMNS].copy()
-    timestamp_text = frame["timestamp"].astype(str).str.replace(r"\.0$", "", regex=True)
+    # 실제 GW 응답은 초까지 포함한 14자리 YYYYMMDDHHMMSS를 보내기도 한다.
+    # 기존 12자리 YYYYMMDDHHMM도 지원하고 5분 집계에 불필요한 초는 제거한다.
+    timestamp_digits = (
+        frame["timestamp"]
+        .astype(str)
+        .str.replace(r"\.0$", "", regex=True)
+        .str.replace(r"\D", "", regex=True)
+    )
+    timestamp_text = timestamp_digits.str.slice(0, 12)
     frame["timestamp"] = pd.to_datetime(
         timestamp_text, format="%Y%m%d%H%M", errors="coerce"
     )
@@ -272,7 +280,7 @@ def fetch_jeju_grid_live(
     일반 실시간 호출은 신규 GW의 기준일 없는 요청을 먼저 사용한다. GW가
     0건이거나 일시적으로 실패하면, 같은 태양광·풍력 필드를 제공하는 KPX의
     구형 공식 XML 주소를 한 번만 대체 호출한다. 이 방식은 호출당 최대 2회라
-    앱의 30분 오류 캐시와 함께 개발계정 일 100회 한도를 넘지 않는다.
+    앱의 60분 오류 캐시와 함께 개발계정 일 100회 한도를 넘지 않는다.
 
     사용자가 과거 날짜를 명시한 진단 호출은 과거 조회가 불가능한 구형
     `Today` 주소로 대체하지 않고 신규 GW에 그 날짜만 한 번 요청한다.
