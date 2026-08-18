@@ -20,7 +20,7 @@ from live_forecast import (  # noqa: E402
     fetch_open_meteo_forecast,
     train_forecast_only_models,
 )
-from llm_explain import explain_recommendation  # noqa: E402
+from llm_explain import LlmExplanationError, explain_recommendation  # noqa: E402
 from jeju_grid_live import (  # noqa: E402
     JejuGridApiError,
     JejuGridNoDataError,
@@ -453,19 +453,29 @@ except ValueError as error:
     st.error(str(error))
     st.stop()
 
-llm_explanation = explain_recommendation(
-    forecast=forecast,
-    plan=plan,
-    context={
-        "mode": mode,
-        "has_observed": has_observed,
-        "current_soc": current_soc,
-        "target_soc": target_soc,
-    },
-    api_key=get_llm_setting("OPENAI_API_KEY"),
-    model=get_llm_setting("OPENAI_MODEL") or None,
-    endpoint=get_llm_setting("OPENAI_BASE_URL") or None,
-)
+try:
+    llm_explanation = explain_recommendation(
+        forecast=forecast,
+        plan=plan,
+        context={
+            "mode": mode,
+            "has_observed": has_observed,
+            "current_soc": current_soc,
+            "target_soc": target_soc,
+        },
+        provider=get_llm_setting("LLM_PROVIDER") or "ollama",
+        api_key=get_llm_setting("OPENAI_API_KEY"),
+        model=get_llm_setting("OPENAI_MODEL") or None,
+        endpoint=(
+            get_llm_setting("OLLAMA_BASE_URL")
+            if (get_llm_setting("LLM_PROVIDER") or "ollama").lower() == "ollama"
+            else get_llm_setting("OPENAI_BASE_URL")
+        ) or None,
+    )
+except LlmExplanationError as error:
+    st.error(str(error))
+    st.info("LLM 설명을 활성화한 뒤 추천 결과를 확인할 수 있습니다.")
+    st.stop()
 st.subheader("추천 결과 해석")
 st.info(llm_explanation)
 

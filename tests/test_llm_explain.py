@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 import pandas as pd
 import requests
 
-from scripts.llm_explain import explain_recommendation
+from scripts.llm_explain import LlmExplanationError, explain_recommendation
 
 
 class LlmExplainTests(unittest.TestCase):
@@ -30,10 +30,26 @@ class LlmExplainTests(unittest.TestCase):
             "reached_soc": 80.0,
         }
 
-    def test_without_key_uses_local_fallback(self):
-        explanation = explain_recommendation(self.forecast, self.plan, api_key="")
-        self.assertIn("01:00~02:00", explanation)
-        self.assertIn("바람", explanation)
+    def test_without_key_requires_llm_configuration(self):
+        with self.assertRaises(LlmExplanationError):
+            explain_recommendation(self.forecast, self.plan, provider="openai", api_key="")
+
+    @patch("scripts.llm_explain.requests.post")
+    def test_ollama_response_is_returned_without_api_key(self, post):
+        response = Mock()
+        response.json.return_value = {"message": {"content": "로컬 추천 설명"}}
+        post.return_value = response
+
+        explanation = explain_recommendation(
+            self.forecast,
+            self.plan,
+            provider="ollama",
+            model="qwen2.5:3b",
+            endpoint="http://localhost:11434/api/chat",
+        )
+
+        self.assertEqual(explanation, "로컬 추천 설명")
+        self.assertEqual(post.call_args.kwargs["json"]["model"], "qwen2.5:3b")
 
     @patch("scripts.llm_explain.requests.post")
     def test_openai_compatible_response_is_returned(self, post):
@@ -44,6 +60,7 @@ class LlmExplainTests(unittest.TestCase):
         explanation = explain_recommendation(
             self.forecast,
             self.plan,
+            provider="openai",
             api_key="test-key",
             model="test-model",
             endpoint="https://example.test/v1/chat/completions",
@@ -57,6 +74,6 @@ class LlmExplainTests(unittest.TestCase):
         "scripts.llm_explain.requests.post",
         side_effect=requests.RequestException("network"),
     )
-    def test_api_failure_does_not_break_recommendation(self, post):
-        explanation = explain_recommendation(self.forecast, self.plan, api_key="test-key")
-        self.assertIn("추천 충전시간", explanation)
+    def test_api_failure_is_reported(self, post):
+        with self.assertRaises(LlmExplanationError):
+            explain_recommendation(self.forecast, self.plan, api_key="test-key")
