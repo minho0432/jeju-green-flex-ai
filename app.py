@@ -160,11 +160,16 @@ def load_today_weather():
     return fetch_open_meteo_forecast(target_day_offset=0)
 
 
-@st.cache_data(ttl=1200, show_spinner=False)
+@st.cache_data(ttl=1800, show_spinner=False)
 def load_official_grid(service_key: str):
-    # 20분 캐시: 개발계정의 일 100회 한도를 넘기지 않도록 보호한다.
-    # 인증키가 바뀌면 새 키로 다시 호출할 수 있도록 캐시 키에 포함한다.
-    return fetch_jeju_grid_live(service_key)
+    # 성공뿐 아니라 0건·공식 API 오류도 30분간 캐시한다. Streamlit이 다시
+    # 실행될 때 실패 요청을 반복해 개발계정 일 100회 한도를 소진하지 않는다.
+    try:
+        return fetch_jeju_grid_live(service_key), None, None
+    except JejuGridNoDataError as error:
+        return None, "no_data", str(error)
+    except JejuGridApiError as error:
+        return None, "api_error", str(error)
 
 
 @st.cache_data
@@ -234,7 +239,15 @@ elif mode == "오늘 공식 실시간 관측":
             today_weather = load_today_weather()
 
             st.write("3/4 KPX 제주 5분 계통자료 수신")
-            live_samples = load_official_grid(service_key)
+            live_samples, live_error_type, live_error_message = load_official_grid(
+                service_key
+            )
+            if live_error_type == "no_data":
+                raise JejuGridNoDataError(live_error_message)
+            if live_error_type == "api_error":
+                raise JejuGridApiError(live_error_message)
+            if live_samples is None:
+                raise JejuGridApiError("제주 실시간 API 결과를 준비하지 못했습니다.")
             live_hourly = grid_samples_to_hourly(live_samples)
             observation_as_of = latest_complete_hour(live_hourly)
             live_age_minutes = observation_age_minutes(live_samples)
