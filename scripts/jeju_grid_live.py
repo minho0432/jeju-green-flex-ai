@@ -55,6 +55,10 @@ class JejuGridApiError(RuntimeError):
     """API 오류를 비밀키가 노출되지 않는 사용자용 메시지로 바꾼 예외."""
 
 
+class JejuGridNoDataError(JejuGridApiError):
+    """연결과 인증은 성공했지만 요청일 관측값이 0건인 경우."""
+
+
 ERROR_GUIDANCE = {
     "01": "공공데이터포털 내부 오류입니다. 잠시 후 다시 시도하세요.",
     "04": "호출 주소 또는 요청 방식이 허용되지 않았습니다.",
@@ -187,12 +191,22 @@ def parse_api_response(payload: str | bytes | dict[str, Any]) -> pd.DataFrame:
         )
 
     body = response.get("body", {}) or {}
-    items_container = body.get("items", {}) or {}
-    items = items_container.get("item", []) if isinstance(items_container, dict) else []
+    items_container = body.get("items", []) or []
+    if isinstance(items_container, dict):
+        items = items_container.get("item", []) or []
+    elif isinstance(items_container, list):
+        # GW 전환 응답은 items가 곧 배열로 오는 형식도 지원한다.
+        items = items_container
+    else:
+        items = []
     if isinstance(items, dict):
         items = [items]
     if not isinstance(items, list) or not items:
-        raise JejuGridApiError("제주 실시간 API에 오늘 관측값이 아직 없습니다.")
+        total_count = body.get("totalCount", 0)
+        raise JejuGridNoDataError(
+            "KPX API 연결과 인증은 성공했지만 요청일 관측값이 0건입니다 "
+            f"(totalCount={total_count}). 제공기관의 오늘 자료 등록 상태를 확인하세요."
+        )
 
     frame = pd.DataFrame(items).rename(columns=API_TO_CANONICAL)
     missing = set(REQUIRED_COLUMNS) - set(frame.columns)
