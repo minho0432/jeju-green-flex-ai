@@ -42,27 +42,6 @@ DATA_GO_KR_SERVICE_KEY = "발급받은_일반인증키"
 
 실제 키를 GitHub, 카카오톡, 이 대화창에 올리면 안 됩니다. 앱은 개발계정의 하루 100회 제한을 보호하기 위해 API 결과를 20분 동안 저장합니다. 따라서 일반 새로고침은 즉시 추가 호출하지 않으며 최대 약 20분 이내 자료를 보여 줄 수 있습니다.
 
-## 추천 결과 LLM 설명
-
-LLM은 충전시간·Green Score를 계산하지 않습니다. 기존 LightGBM/최적화 결과를 바탕으로
-예보 오차 가능성, 낮은 점수의 이유, 실시간 보정 필요성을 한국어로 설명하는 선택 기능입니다.
-LLM 설명을 필수로 사용하는 현재 설정에서는 키가 없거나 호출이 실패하면 추천 결과를 표시하지 않고 설정 오류를 안내합니다.
-
-Streamlit Cloud의 `Settings → Secrets` 또는 로컬 환경변수에 다음을 설정합니다.
-
-```toml
-LLM_PROVIDER = "ollama"
-OLLAMA_MODEL = "qwen2.5:0.5b"
-OLLAMA_BASE_URL = "http://localhost:11434/api/chat"
-# OpenAI 호환 provider를 사용할 때만 아래 설정을 사용합니다.
-# OPENAI_API_KEY = "발급받은_API_키"
-# OPENAI_MODEL = "gpt-4o-mini"
-# 다른 OpenAI 호환 서버를 사용할 때만 지정합니다.
-# OPENAI_BASE_URL = "https://example.com/v1/chat/completions"
-```
-
-실제 API 키는 GitHub에 커밋하지 마세요.
-
 ## Green Score
 
 ```text
