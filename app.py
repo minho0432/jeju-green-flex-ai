@@ -22,6 +22,7 @@ from live_forecast import (  # noqa: E402
 )
 from jeju_grid_live import (  # noqa: E402
     JejuGridApiError,
+    JejuGridNoDataError,
     fetch_jeju_grid_live,
     grid_samples_to_hourly,
     latest_complete_hour,
@@ -255,7 +256,12 @@ elif mode == "오늘 공식 실시간 관측":
             )
     except (JejuGridApiError, RuntimeError, ValueError, OSError) as error:
         st.error(str(error))
-        if isinstance(error, JejuGridApiError):
+        if isinstance(error, JejuGridNoDataError):
+            st.info(
+                "KPX 연결과 인증은 성공했습니다. 다만 제공된 오늘 관측이 0건이라 "
+                "실제 실시간 보정은 실행하지 않았습니다."
+            )
+        elif isinstance(error, JejuGridApiError):
             st.info(
                 "KPX API가 성공하지 않아 실제 실시간 보정은 실행하지 않았습니다. "
                 "활용신청·사용기간·인증키·호출한도를 확인하세요."
