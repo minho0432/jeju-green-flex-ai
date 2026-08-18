@@ -100,6 +100,7 @@ def build_request_url(
     base_date: str | None = None,
     page_no: int = 1,
     num_of_rows: int = 300,
+    include_base_date: bool = True,
 ) -> str:
     """공식 명세에 맞는 URL을 만든다.
 
@@ -111,19 +112,19 @@ def build_request_url(
         raise ValueError("공공데이터포털 인증키가 비어 있습니다.")
     if page_no < 1 or num_of_rows < 1:
         raise ValueError("페이지와 행 수는 1 이상이어야 합니다.")
-    if base_date is None:
-        base_date = datetime.now(KOREA_TIMEZONE).strftime("%Y%m%d")
-    if len(base_date) != 8 or not base_date.isdigit():
-        raise ValueError("기준일은 YYYYMMDD 형식이어야 합니다.")
-    query = urlencode(
-        {
-            "serviceKey": key,
-            "pageNo": page_no,
-            "numOfRows": num_of_rows,
-            "dataType": "json",
-            "baseDate": base_date,
-        }
-    )
+    query_parameters: dict[str, str | int] = {
+        "serviceKey": key,
+        "pageNo": page_no,
+        "numOfRows": num_of_rows,
+        "dataType": "json",
+    }
+    if include_base_date:
+        if base_date is None:
+            base_date = datetime.now(KOREA_TIMEZONE).strftime("%Y%m%d")
+        if len(base_date) != 8 or not base_date.isdigit():
+            raise ValueError("기준일은 YYYYMMDD 형식이어야 합니다.")
+        query_parameters["baseDate"] = base_date
+    query = urlencode(query_parameters)
     return f"{API_URL}?{query}"
 
 
@@ -235,49 +236,81 @@ def fetch_jeju_grid_live(
     base_date: str | None = None,
     timeout_seconds: int = 12,
 ) -> pd.DataFrame:
-    """오늘의 제주 5분 관측값을 호출하고 실패 원인을 구분한다."""
+    """오늘의 제주 5분 관측값을 호출하고 실패 원인을 구분한다.
+
+    `Today` 기능은 기준일이 선택 항목인데 GW 전환 뒤 제공기관별 동작이 다를
+    수 있다. 일반 실시간 호출은 기준일을 생략해 먼저 요청하고, 정상 응답이
+    0건일 때만 오늘 날짜를 명시해 한 번 더 확인한다. 사용자가 과거 날짜를
+    명시한 진단 호출은 그 날짜만 한 번 요청한다.
+    """
     if timeout_seconds <= 0:
         raise ValueError("API 제한시간은 0보다 커야 합니다.")
-    request_url = build_request_url(service_key, base_date=base_date)
-    request = Request(request_url, headers={"User-Agent": "JejuGreenFlexAI/1.0"})
-    try:
-        with urlopen(request, timeout=timeout_seconds) as response:
-            payload = response.read()
-    except HTTPError as error:
-        # 게이트웨이가 HTTP 오류와 함께 공식 XML/JSON 사유를 보내면 우선 해석한다.
+    if base_date is None:
+        request_urls = [
+            build_request_url(service_key, include_base_date=False),
+            build_request_url(service_key, include_base_date=True),
+        ]
+    else:
+        request_urls = [build_request_url(service_key, base_date=base_date)]
+
+    def request_frame(request_url: str) -> pd.DataFrame:
+        request = Request(
+            request_url, headers={"User-Agent": "JejuGreenFlexAI/1.0"}
+        )
         try:
-            payload = error.read()
-            if payload:
-                return parse_api_response(payload)
-        except JejuGridApiError:
-            raise
-        except Exception:
-            pass
-        raise JejuGridApiError(
-            f"제주 실시간 API HTTP 오류({error.code})입니다. "
-            "호출 주소와 공공데이터포털 서비스 상태를 확인하세요."
-        ) from error
-    except (TimeoutError, socket.timeout) as error:
-        raise JejuGridApiError(
-            f"제주 실시간 API가 {timeout_seconds}초 안에 응답하지 않았습니다. "
-            "잠시 후 다시 시도하세요."
-        ) from error
-    except URLError as error:
-        reason = getattr(error, "reason", None)
-        if isinstance(reason, (TimeoutError, socket.timeout)):
+            with urlopen(request, timeout=timeout_seconds) as response:
+                payload = response.read()
+        except HTTPError as error:
+            # 게이트웨이가 HTTP 오류와 함께 공식 XML/JSON 사유를 보내면 우선 해석한다.
+            try:
+                payload = error.read()
+                if payload:
+                    return parse_api_response(payload)
+            except JejuGridApiError:
+                raise
+            except Exception:
+                pass
+            raise JejuGridApiError(
+                f"제주 실시간 API HTTP 오류({error.code})입니다. "
+                "호출 주소와 공공데이터포털 서비스 상태를 확인하세요."
+            ) from error
+        except (TimeoutError, socket.timeout) as error:
             raise JejuGridApiError(
                 f"제주 실시간 API가 {timeout_seconds}초 안에 응답하지 않았습니다. "
                 "잠시 후 다시 시도하세요."
             ) from error
-        raise JejuGridApiError(
-            "Streamlit 서버에서 공공데이터포털에 연결하지 못했습니다. "
-            "배포 서버 네트워크와 공공데이터포털 상태를 확인하세요."
-        ) from error
-    except OSError as error:
-        raise JejuGridApiError(
-            "Streamlit 서버의 네트워크 오류로 제주 실시간 API를 호출하지 못했습니다."
-        ) from error
-    return parse_api_response(payload)
+        except URLError as error:
+            reason = getattr(error, "reason", None)
+            if isinstance(reason, (TimeoutError, socket.timeout)):
+                raise JejuGridApiError(
+                    f"제주 실시간 API가 {timeout_seconds}초 안에 응답하지 않았습니다. "
+                    "잠시 후 다시 시도하세요."
+                ) from error
+            raise JejuGridApiError(
+                "Streamlit 서버에서 공공데이터포털에 연결하지 못했습니다. "
+                "배포 서버 네트워크와 공공데이터포털 상태를 확인하세요."
+            ) from error
+        except OSError as error:
+            raise JejuGridApiError(
+                "Streamlit 서버의 네트워크 오류로 제주 실시간 API를 호출하지 못했습니다."
+            ) from error
+        return parse_api_response(payload)
+
+    last_no_data_error: JejuGridNoDataError | None = None
+    for request_url in request_urls:
+        try:
+            return request_frame(request_url)
+        except JejuGridNoDataError as error:
+            last_no_data_error = error
+
+    if len(request_urls) > 1:
+        raise JejuGridNoDataError(
+            "KPX API 연결과 인증은 성공했지만 기준일 생략·오늘 날짜 명시 "
+            "요청이 모두 0건입니다. 공공데이터 GW의 오늘 자료 연계 상태를 "
+            "제공기관에 확인하세요."
+        ) from last_no_data_error
+    assert last_no_data_error is not None
+    raise last_no_data_error
 
 
 def grid_samples_to_hourly(samples: pd.DataFrame) -> pd.DataFrame:
