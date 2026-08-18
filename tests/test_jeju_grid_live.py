@@ -6,6 +6,7 @@ import json
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +15,7 @@ from jeju_grid_live import (  # noqa: E402
     JejuGridApiError,
     JejuGridNoDataError,
     build_request_url,
+    fetch_jeju_grid_live,
     grid_samples_to_hourly,
     latest_complete_hour,
     observation_age_minutes,
@@ -135,6 +137,64 @@ class JejuGridLiveTests(unittest.TestCase):
         self.assertIn("serviceKey=abc%2Bdef%3D", url)
         self.assertNotIn("%252B", url)
         self.assertIn("baseDate=20260811", url)
+
+    def test_request_url_can_omit_base_date(self):
+        url = build_request_url("abc%2Bdef%3D", include_base_date=False)
+        self.assertNotIn("baseDate=", url)
+        self.assertIn("serviceKey=abc%2Bdef%3D", url)
+
+    def test_live_fetch_retries_with_today_after_undated_zero_rows(self):
+        empty_payload = json.dumps(
+            {
+                "response": {
+                    "header": {"resultCode": "00"},
+                    "body": {"items": [], "totalCount": 0},
+                }
+            }
+        ).encode()
+        success_payload = json.dumps(
+            {
+                "response": {
+                    "header": {"resultCode": "00"},
+                    "body": {"items": [sample_item(0)], "totalCount": 1},
+                }
+            }
+        ).encode()
+        empty_response = MagicMock()
+        empty_response.__enter__.return_value.read.return_value = empty_payload
+        success_response = MagicMock()
+        success_response.__enter__.return_value.read.return_value = success_payload
+
+        with patch(
+            "jeju_grid_live.urlopen",
+            side_effect=[empty_response, success_response],
+        ) as mocked_urlopen:
+            frame = fetch_jeju_grid_live("abc%2Bdef%3D")
+
+        self.assertEqual(len(frame), 1)
+        self.assertEqual(mocked_urlopen.call_count, 2)
+        first_url = mocked_urlopen.call_args_list[0].args[0].full_url
+        second_url = mocked_urlopen.call_args_list[1].args[0].full_url
+        self.assertNotIn("baseDate=", first_url)
+        self.assertIn("baseDate=", second_url)
+
+    def test_explicit_date_does_not_trigger_live_fallback(self):
+        empty_payload = json.dumps(
+            {
+                "response": {
+                    "header": {"resultCode": "00"},
+                    "body": {"items": [], "totalCount": 0},
+                }
+            }
+        ).encode()
+        empty_response = MagicMock()
+        empty_response.__enter__.return_value.read.return_value = empty_payload
+
+        with patch("jeju_grid_live.urlopen", return_value=empty_response) as mocked:
+            with self.assertRaises(JejuGridNoDataError):
+                fetch_jeju_grid_live("abc%2Bdef%3D", base_date="20260814")
+
+        self.assertEqual(mocked.call_count, 1)
 
     def test_twelve_five_minute_samples_make_one_hour_mwh(self):
         payload = {
