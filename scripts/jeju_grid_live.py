@@ -11,8 +11,10 @@ API 원본의 단위는 MW(그 순간의 발전 세기)다. 현재 AI가 학습�
 from __future__ import annotations
 
 import json
+import socket
 from datetime import datetime
 from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urlencode
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree
@@ -51,6 +53,42 @@ REQUIRED_COLUMNS = ["timestamp", *NUMERIC_COLUMNS]
 
 class JejuGridApiError(RuntimeError):
     """API 오류를 비밀키가 노출되지 않는 사용자용 메시지로 바꾼 예외."""
+
+
+ERROR_GUIDANCE = {
+    "01": "공공데이터포털 내부 오류입니다. 잠시 후 다시 시도하세요.",
+    "04": "호출 주소 또는 요청 방식이 허용되지 않았습니다.",
+    "05": "공공데이터포털 또는 제공기관 응답이 지연되고 있습니다.",
+    "10": "요청 날짜나 페이지 파라미터 형식이 올바르지 않습니다.",
+    "12": "요청한 API 서비스 주소가 변경됐거나 존재하지 않습니다.",
+    "20": "이 API의 활용신청·승인 상태와 Streamlit Secrets의 인증키를 확인하세요.",
+    "22": "오늘의 API 호출한도를 초과했습니다. 한도 초기화 후 다시 시도하세요.",
+    "23": "짧은 시간에 호출이 몰렸습니다. 잠시 후 다시 시도하세요.",
+    "29": "배포 서버의 접속 IP가 공공데이터포털에서 차단됐습니다.",
+    "30": "등록되지 않은 인증키입니다. 해당 API에 발급된 키인지 확인하세요.",
+    "31": "인증키 사용기간이 만료됐습니다. 연장 승인과 적용 상태를 확인하세요.",
+}
+
+
+def _api_error_message(result_code: str, result_message: str) -> str:
+    code = str(result_code).strip()
+    official = str(result_message).strip() or "사유 없음"
+    upper = official.upper()
+    if "DEADLINE_HAS_EXPIRED" in upper:
+        code = "31"
+    elif "SERVICE_KEY_IS_NOT_REGISTERED" in upper:
+        code = "30"
+    elif "LIMITED_NUMBER" in upper and "PER_SECOND" in upper:
+        code = "23"
+    elif "LIMITED_NUMBER" in upper:
+        code = "22"
+    elif "PERMISSION_DENIED" in upper or "SERVICE_ACCESS_DENIED" in upper:
+        code = "20"
+    guidance = ERROR_GUIDANCE.get(
+        code,
+        "공식 응답의 오류코드와 공공데이터포털 활용신청 상태를 확인하세요.",
+    )
+    return f"제주 실시간 API 오류({code}): {guidance} [공식 응답: {official}]"
 
 
 def build_request_url(
@@ -145,7 +183,7 @@ def parse_api_response(payload: str | bytes | dict[str, Any]) -> pd.DataFrame:
     if result_code not in {"0", "00"}:
         result_message = str(header.get("resultMsg", "알 수 없는 오류"))
         raise JejuGridApiError(
-            f"제주 실시간 API 오류({result_code}): {result_message}"
+            _api_error_message(result_code, result_message)
         )
 
     body = response.get("body", {}) or {}
@@ -183,15 +221,47 @@ def fetch_jeju_grid_live(
     base_date: str | None = None,
     timeout_seconds: int = 12,
 ) -> pd.DataFrame:
-    """오늘의 제주 5분 관측값을 호출한다. 인증키는 오류문에 포함하지 않는다."""
+    """오늘의 제주 5분 관측값을 호출하고 실패 원인을 구분한다."""
+    if timeout_seconds <= 0:
+        raise ValueError("API 제한시간은 0보다 커야 합니다.")
     request_url = build_request_url(service_key, base_date=base_date)
     request = Request(request_url, headers={"User-Agent": "JejuGreenFlexAI/1.0"})
     try:
         with urlopen(request, timeout=timeout_seconds) as response:
             payload = response.read()
-    except Exception as error:
+    except HTTPError as error:
+        # 게이트웨이가 HTTP 오류와 함께 공식 XML/JSON 사유를 보내면 우선 해석한다.
+        try:
+            payload = error.read()
+            if payload:
+                return parse_api_response(payload)
+        except JejuGridApiError:
+            raise
+        except Exception:
+            pass
         raise JejuGridApiError(
-            "제주 실시간 API에 연결하지 못했습니다. 인증키 승인 상태와 네트워크를 확인하세요."
+            f"제주 실시간 API HTTP 오류({error.code})입니다. "
+            "호출 주소와 공공데이터포털 서비스 상태를 확인하세요."
+        ) from error
+    except (TimeoutError, socket.timeout) as error:
+        raise JejuGridApiError(
+            f"제주 실시간 API가 {timeout_seconds}초 안에 응답하지 않았습니다. "
+            "잠시 후 다시 시도하세요."
+        ) from error
+    except URLError as error:
+        reason = getattr(error, "reason", None)
+        if isinstance(reason, (TimeoutError, socket.timeout)):
+            raise JejuGridApiError(
+                f"제주 실시간 API가 {timeout_seconds}초 안에 응답하지 않았습니다. "
+                "잠시 후 다시 시도하세요."
+            ) from error
+        raise JejuGridApiError(
+            "Streamlit 서버에서 공공데이터포털에 연결하지 못했습니다. "
+            "배포 서버 네트워크와 공공데이터포털 상태를 확인하세요."
+        ) from error
+    except OSError as error:
+        raise JejuGridApiError(
+            "Streamlit 서버의 네트워크 오류로 제주 실시간 API를 호출하지 못했습니다."
         ) from error
     return parse_api_response(payload)
 
