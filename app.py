@@ -44,6 +44,96 @@ METRICS_PATH = ROOT / "outputs" / "model_metrics.json"
 HISTORY_PATH = ROOT / "data" / "processed" / "train.csv"
 
 st.set_page_config(page_title="Jeju Green Flex AI", page_icon="🌱", layout="wide")
+
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+
+if "user_name" not in st.session_state:
+    st.session_state.user_name = ""
+
+if "user_type" not in st.session_state:
+    st.session_state.user_type = "제주도민"
+
+if "profile_battery_kwh" not in st.session_state:
+    st.session_state.profile_battery_kwh = 60.0
+
+if "profile_charger_kw" not in st.session_state:
+    st.session_state.profile_charger_kw = 7.0
+    
+if not st.session_state.logged_in:
+    st.title("🌿 Green Time JEJU")
+    st.caption("재생에너지가 많은 시간에 맞춰 EV 충전시간을 추천합니다.")
+
+    login_tab, signup_tab = st.tabs(["로그인", "회원가입"])
+
+    with login_tab:
+        login_name = st.text_input("이름", key="login_name")
+        login_password = st.text_input(
+            "비밀번호",
+            type="password",
+            key="login_password",
+        )
+
+        if st.button("로그인", use_container_width=True):
+            if login_name.strip():
+                st.session_state.logged_in = True
+                st.session_state.user_name = login_name.strip()
+                st.rerun()
+            else:
+                st.warning("이름을 입력해주세요.")
+
+    with signup_tab:
+        signup_name = st.text_input("이름", key="signup_name")
+
+        signup_type = st.selectbox(
+            "이용자 유형",
+            ["제주도민", "렌터카 관광객"],
+        )
+
+        signup_battery = st.number_input(
+            "차량 배터리 용량 (kWh)",
+            min_value=20.0,
+            max_value=120.0,
+            value=60.0,
+            step=1.0,
+        )
+
+        signup_charger = st.selectbox(
+            "주로 사용하는 충전기",
+            [3.0, 7.0, 11.0, 50.0],
+            index=1,
+            format_func=lambda value: f"{value:g} kW",
+        )
+
+        signup_password = st.text_input(
+            "비밀번호",
+            type="password",
+            key="signup_password",
+        )
+
+        if st.button("가입하고 시작하기", use_container_width=True):
+            if signup_name.strip():
+                st.session_state.logged_in = True
+                st.session_state.user_name = signup_name.strip()
+                st.session_state.user_type = signup_type
+                st.session_state.profile_battery_kwh = signup_battery
+                st.session_state.profile_charger_kw = signup_charger
+                st.rerun()
+            else:
+                st.warning("이름을 입력해주세요.")
+
+    st.caption(
+        "※ 현재 MVP에서는 실제 계정 DB가 아닌 "
+        "시연용 사용자 세션으로 동작합니다."
+    )
+
+    st.stop()
+
+st.success(
+    f"👋 {st.session_state.user_name}님, "
+    f"오늘의 Green Time을 찾아볼게요."
+)
+
 st.title("🌱 Jeju Green Flex AI")
 st.caption("가격절약 기회와 친환경 충전을 함께 고려하는 제주 개인 EV 충전시간 추천")
 
@@ -197,8 +287,22 @@ with st.sidebar:
     st.header("1. 내 차량과 일정")
     current_soc = st.slider("현재 배터리(%)", 5, 90, 30, 5)
     target_soc = st.slider("출발할 때 목표 배터리(%)", 10, 100, 80, 5)
-    battery_kwh = st.number_input("배터리 전체 용량(kWh)", 20.0, 120.0, 60.0, 1.0)
-    charger_kw = st.selectbox("충전기 출력(kW)", [3.0, 7.0, 11.0, 50.0], index=1)
+    battery_kwh = st.number_input(
+        "배터리 전체 용량(kWh)",
+        20.0,
+        120.0,
+        float(st.session_state.profile_battery_kwh),
+        1.0,
+    )
+
+    charger_options = [3.0, 7.0, 11.0, 50.0]
+    profile_charger = float(st.session_state.profile_charger_kw)
+
+    charger_kw = st.selectbox(
+        "충전기 출력(kW)",
+        charger_options,
+        index=charger_options.index(profile_charger),
+    )
     efficiency_percent = st.slider("충전 효율(%)", 70, 100, 90)
     start_hour = st.slider("충전을 시작할 수 있는 시각", 0, 22, 8)
     departure_hour = st.slider("차량을 사용해야 하는 시각", 1, 24, 20)
@@ -218,6 +322,17 @@ with st.sidebar:
         session_point_cap = st.number_input(
             "한 번 충전 크레딧 상한(P)", 100.0, 10000.0, 1500.0, 100.0
         )
+
+    st.divider()
+    st.caption(
+        f"👤 {st.session_state.user_name} · "
+        f"{st.session_state.user_type}"
+    )
+
+    if st.button("로그아웃", use_container_width=True):
+        st.session_state.logged_in = False
+        st.session_state.user_name = ""
+        st.rerun()
 
 point_policy = derive_point_policy(monthly_budget_won, target_shifted_kwh)
 base_point_rate = point_policy["base_point_rate"]
