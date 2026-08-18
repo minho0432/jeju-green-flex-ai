@@ -77,6 +77,35 @@ class JejuGridLiveTests(unittest.TestCase):
         self.assertIn("30", str(context.exception))
         self.assertIn("SERVICE KEY IS NOT REGISTERED", str(context.exception))
 
+    def test_expired_key_error_has_actionable_guidance(self):
+        payload = {
+            "response": {
+                "header": {
+                    "resultCode": "31",
+                    "resultMsg": "DEADLINE_HAS_EXPIRED_ERROR",
+                },
+                "body": {},
+            }
+        }
+        with self.assertRaises(JejuGridApiError) as context:
+            parse_api_response(payload)
+        self.assertIn("사용기간이 만료", str(context.exception))
+        self.assertIn("연장 승인", str(context.exception))
+
+    def test_request_limit_error_has_actionable_guidance(self):
+        payload = {
+            "response": {
+                "header": {
+                    "resultCode": "22",
+                    "resultMsg": "LIMITED_NUMBER_OF_SERVICE_REQUESTS_EXCEEDS_ERROR",
+                },
+                "body": {},
+            }
+        }
+        with self.assertRaises(JejuGridApiError) as context:
+            parse_api_response(payload)
+        self.assertIn("호출한도", str(context.exception))
+
     def test_encoded_key_is_not_double_encoded(self):
         url = build_request_url("abc%2Bdef%3D", base_date="20260811")
         self.assertIn("serviceKey=abc%2Bdef%3D", url)
