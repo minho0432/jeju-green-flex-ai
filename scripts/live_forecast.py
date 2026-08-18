@@ -9,8 +9,6 @@ from urllib.request import urlopen
 
 import numpy as np
 import pandas as pd
-from sklearn.ensemble import HistGradientBoostingRegressor
-
 from model_utils import (
     WEATHER_COLUMNS,
     attach_supply_margin_scores,
@@ -28,44 +26,44 @@ JEJU_LONGITUDE = 126.5312
 FORECAST_UNCERTAINTY_MULTIPLIER = 1.25
 
 
-def build_forecast_only_model(target: str):
-    return HistGradientBoostingRegressor(
-        max_iter=250,
-        learning_rate=0.05,
-        max_leaf_nodes=31,
-        l2_regularization=1.0,
-        random_state=42,
-    )
-
-
 def train_forecast_only_models() -> tuple[dict[str, object], pd.DataFrame]:
-    """배포 서버: 저장된 LightGBM이 있으면 사용, 없으면 현장 학습."""
+    """배포 서버에서는 저장된 예측 모델만 로드하고 현장 재학습하지 않는다."""
     history = pd.read_csv(DATA_PATH, parse_dates=["timestamp"]).sort_values("timestamp")
     history = ensure_demand_column(history)
     history = history.dropna(subset=WEATHER_COLUMNS).reset_index(drop=True)
-    features = make_live_features(history)
-    models: dict[str, object] = {}
+
     model_dir = ROOT / "models"
+    model_paths = {
+        "renewable_mwh": model_dir / "renewable_live.joblib",
+        "demand_mwh": model_dir / "demand_live.joblib",
+    }
+    missing = [path.name for path in model_paths.values() if not path.exists()]
+    if missing:
+        raise RuntimeError(
+            "배포용 AI 모델 파일이 없습니다: "
+            + ", ".join(missing)
+            + ". 학습 후 모델 파일을 저장소에 포함하세요."
+        )
+
     try:
         import joblib
 
-        re_path = model_dir / "renewable_live.joblib"
-        dem_path = model_dir / "demand_live.joblib"
-        if re_path.exists():
-            models["renewable_mwh"] = joblib.load(re_path)
-        if dem_path.exists():
-            models["demand_mwh"] = joblib.load(dem_path)
-    except Exception:
-        pass
-    for target in ("renewable_mwh", "demand_mwh"):
-        if target in models:
-            continue
-        model = build_forecast_only_model(target)
-        available = history[target].notna()
-        if not available.any():
-            raise ValueError(f"{target} 학습에 사용할 값이 없습니다.")
-        model.fit(features.loc[available], history.loc[available, target])
-        models[target] = model
+        models = {
+            target: joblib.load(path)
+            for target, path in model_paths.items()
+        }
+    except Exception as error:
+        raise RuntimeError(
+            "저장된 AI 모델을 불러오지 못했습니다 "
+            f"({type(error).__name__}). 학습 환경과 배포 환경의 "
+            "scikit-learn·LightGBM·joblib 버전을 확인하세요."
+        ) from error
+
+    invalid = [target for target, model in models.items() if not hasattr(model, "predict")]
+    if invalid:
+        raise RuntimeError(
+            "예측 기능이 없는 모델 파일입니다: " + ", ".join(invalid)
+        )
     return models, history
 
 
