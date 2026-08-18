@@ -1,6 +1,6 @@
 pandas>=2.0,<3.0
 numpy>=1.26,<3.0
-scikit-learn==1.9.0
+scikit-learn==1.8.0
 joblib==1.5.3
 streamlit==1.61.1
 plotly>=5.18,<7.0
