@@ -51,6 +51,24 @@ class JejuGridLiveTests(unittest.TestCase):
         self.assertEqual(frame.iloc[0]["solar_mw"], 60)
         self.assertEqual(frame.iloc[0]["wind_mw"], 120)
 
+    def test_fourteen_digit_official_timestamp_is_supported(self):
+        item = sample_item(0)
+        item["baseDatetime"] = "20260818180500"
+        payload = {
+            "response": {
+                "header": {"resultCode": "00", "resultMsg": "OK"},
+                "body": {
+                    "items": {"item": [item]},
+                    "totalCount": "1",
+                },
+            }
+        }
+        frame = parse_api_response(payload)
+        self.assertEqual(
+            frame.iloc[0]["timestamp"].strftime("%Y-%m-%d %H:%M"),
+            "2026-08-18 18:05",
+        )
+
     def test_gateway_items_array_is_supported(self):
         payload = {
             "response": {
