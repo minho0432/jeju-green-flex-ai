@@ -23,6 +23,19 @@ jobs:
       - name: Validate source data
         run: python scripts/validate_data.py
 
+      - name: Validate committed deployment models
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, "scripts")
+          from live_forecast import train_forecast_only_models
+
+          models, history = train_forecast_only_models()
+          assert sorted(models) == ["demand_mwh", "renewable_mwh"]
+          assert len(history) == 25559
+          print("Committed deployment models loaded successfully.")
+          PY
+
       - name: Train and backtest models
         run: python scripts/train_models.py
 
