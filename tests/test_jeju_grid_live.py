@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from jeju_grid_live import (  # noqa: E402
     JejuGridApiError,
+    JejuGridNoDataError,
     build_request_url,
     grid_samples_to_hourly,
     latest_complete_hour,
@@ -46,6 +47,29 @@ class JejuGridLiveTests(unittest.TestCase):
         self.assertEqual(frame.iloc[0]["timestamp"].strftime("%H:%M"), "10:00")
         self.assertEqual(frame.iloc[0]["solar_mw"], 60)
         self.assertEqual(frame.iloc[0]["wind_mw"], 120)
+
+    def test_gateway_items_array_is_supported(self):
+        payload = {
+            "response": {
+                "header": {"resultCode": "00"},
+                "body": {"items": [sample_item(0), sample_item(5)], "totalCount": 2},
+            }
+        }
+        frame = parse_api_response(payload)
+        self.assertEqual(len(frame), 2)
+        self.assertEqual(frame.iloc[0]["timestamp"].strftime("%H:%M"), "10:00")
+
+    def test_empty_success_response_is_not_reported_as_auth_failure(self):
+        payload = {
+            "response": {
+                "header": {"resultCode": "00"},
+                "body": {"items": [], "totalCount": 0},
+            }
+        }
+        with self.assertRaises(JejuGridNoDataError) as context:
+            parse_api_response(payload)
+        self.assertIn("연결과 인증은 성공", str(context.exception))
+        self.assertIn("totalCount=0", str(context.exception))
 
     def test_single_item_and_top_level_response_are_supported(self):
         payload = {
