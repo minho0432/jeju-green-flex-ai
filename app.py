@@ -20,6 +20,7 @@ from live_forecast import (  # noqa: E402
     fetch_open_meteo_forecast,
     train_forecast_only_models,
 )
+from llm_explain import explain_recommendation  # noqa: E402
 from jeju_grid_live import (  # noqa: E402
     JejuGridApiError,
     JejuGridNoDataError,
@@ -184,6 +185,16 @@ def get_data_go_kr_service_key() -> str:
         return key
     try:
         return str(st.secrets.get("DATA_GO_KR_SERVICE_KEY", "")).strip()
+    except (FileNotFoundError, KeyError):
+        return ""
+
+
+def get_llm_setting(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if value:
+        return value
+    try:
+        return str(st.secrets.get(name, "")).strip()
     except (FileNotFoundError, KeyError):
         return ""
 
@@ -441,6 +452,22 @@ try:
 except ValueError as error:
     st.error(str(error))
     st.stop()
+
+llm_explanation = explain_recommendation(
+    forecast=forecast,
+    plan=plan,
+    context={
+        "mode": mode,
+        "has_observed": has_observed,
+        "current_soc": current_soc,
+        "target_soc": target_soc,
+    },
+    api_key=get_llm_setting("OPENAI_API_KEY"),
+    model=get_llm_setting("OPENAI_MODEL") or None,
+    endpoint=get_llm_setting("OPENAI_BASE_URL") or None,
+)
+st.subheader("추천 결과 해석")
+st.info(llm_explanation)
 
 used = plan["ai_schedule"][plan["ai_schedule"]["scheduled_kwh"] > 1e-6].sort_values("timestamp")
 score_col = plan.get("score_column") or "green_score"
