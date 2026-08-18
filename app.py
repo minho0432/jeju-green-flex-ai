@@ -231,66 +231,75 @@ elif mode == "오늘 공식 실시간 관측":
         st.info("키가 없어도 다른 세 가지 모드는 정상 작동합니다.")
         st.stop()
     try:
-        with st.status("오늘의 공식 실시간 자료를 준비하고 있습니다.", expanded=True) as live_status:
+        with st.status("오늘의 자료를 준비하고 있습니다.", expanded=True) as live_status:
             st.write("1/4 저장된 재생에너지·수요 모델 확인")
             live_models, live_history = load_forecast_only_models()
 
             st.write("2/4 Open-Meteo 오늘 날씨예보 수신")
             today_weather = load_today_weather()
-
-            st.write("3/4 KPX 제주 5분 계통자료 수신")
-            live_samples, live_error_type, live_error_message = load_official_grid(
-                service_key
-            )
-            if live_error_type == "no_data":
-                raise JejuGridNoDataError(live_error_message)
-            if live_error_type == "api_error":
-                raise JejuGridApiError(live_error_message)
-            if live_samples is None:
-                raise JejuGridApiError("제주 실시간 API 결과를 준비하지 못했습니다.")
-            live_hourly = grid_samples_to_hourly(live_samples)
-            observation_as_of = latest_complete_hour(live_hourly)
-            live_age_minutes = observation_age_minutes(live_samples)
-
-            st.write("4/4 도착한 실측으로 남은 시간 예측 보정")
             original_forecast = build_live_prediction(
                 live_models, live_history, today_weather
             )
-            forecast, realtime_metadata = adjust_forecast_with_live_renewables(
-                original_forecast,
-                live_history,
-                live_hourly,
-                as_of=observation_as_of,
+
+            st.write("3/4 KPX 신규 GW → 구형 XML 순서로 5분 관측 확인")
+            live_samples, live_error_type, live_error_message = load_official_grid(
+                service_key
             )
-            live_status.update(
-                label="KPX 공식 실측을 반영한 예측 보정이 완료됐습니다.",
-                state="complete",
-                expanded=False,
-            )
-    except (JejuGridApiError, RuntimeError, ValueError, OSError) as error:
+            if live_error_type or live_samples is None:
+                forecast = original_forecast
+                realtime_metadata = None
+                has_observed = False
+                is_official_live = False
+                st.write("4/4 실측 미도착: 오늘 AI 예측으로 안전 전환")
+                live_status.update(
+                    label="실측 없이 오늘 AI 예측으로 계속 실행합니다.",
+                    state="complete",
+                    expanded=False,
+                )
+                if live_error_type == "no_data":
+                    st.warning(live_error_message)
+                    st.info(
+                        "실제 관측 보정은 적용하지 않았습니다. 현재 결과는 오늘 날씨와 "
+                        "저장 모델로 계산한 AI 예측이며, KPX 관측이 들어오면 자동으로 보정됩니다."
+                    )
+                else:
+                    st.warning(live_error_message or "제주 실시간 API 결과가 없습니다.")
+                    st.info(
+                        "실제 관측 보정은 적용하지 않았습니다. 구형 KPX API의 별도 "
+                        "활용신청·인증키·호출한도를 확인하세요."
+                    )
+            else:
+                live_hourly = grid_samples_to_hourly(live_samples)
+                observation_as_of = latest_complete_hour(live_hourly)
+                live_age_minutes = observation_age_minutes(live_samples)
+                api_source = live_samples.attrs.get("api_source", "KPX 공식 API")
+
+                st.write("4/4 도착한 실측으로 남은 시간 예측 보정")
+                forecast, realtime_metadata = adjust_forecast_with_live_renewables(
+                    original_forecast,
+                    live_history,
+                    live_hourly,
+                    as_of=observation_as_of,
+                )
+                realtime_metadata["api_actual_source"] = api_source
+                observation_hour = int(observation_as_of.hour)
+                has_observed = True
+                is_official_live = True
+                live_status.update(
+                    label=f"{api_source} 실측을 반영한 예측 보정이 완료됐습니다.",
+                    state="complete",
+                    expanded=False,
+                )
+    except (RuntimeError, ValueError, OSError) as error:
         st.error(str(error))
-        if isinstance(error, JejuGridNoDataError):
-            st.info(
-                "KPX 연결과 인증은 성공했습니다. 다만 제공된 오늘 관측이 0건이라 "
-                "실제 실시간 보정은 실행하지 않았습니다."
-            )
-        elif isinstance(error, JejuGridApiError):
-            st.info(
-                "KPX API가 성공하지 않아 실제 실시간 보정은 실행하지 않았습니다. "
-                "활용신청·사용기간·인증키·호출한도를 확인하세요."
-            )
-        else:
-            st.info(
-                "저장 모델 또는 날씨예보 준비 단계에서 중단됐습니다. "
-                "API 없이 확인하려면 실시간 보정 재현을 사용하세요."
-            )
+        st.info(
+            "저장 모델 또는 날씨예보 준비 단계에서 중단됐습니다. "
+            "API 없이 확인하려면 실시간 보정 재현을 사용하세요."
+        )
         st.stop()
-    observation_hour = int(observation_as_of.hour)
     has_actual = False
-    has_observed = True
-    is_official_live = True
     display_date = forecast["timestamp"].dt.strftime("%Y-%m-%d").iloc[0]
-    mode_label = "KPX 공식 5분 실측"
+    mode_label = "KPX 공식 5분 실측" if has_observed else "오늘 AI 예측 (KPX 대기)"
 elif mode == "실시간 보정 재현":
     original_forecast = pd.read_csv(FORECAST_PATH, parse_dates=["timestamp"])
     with st.sidebar:
@@ -583,14 +592,18 @@ elif has_observed:
         "먼 시간일수록 보정 영향이 줄어듭니다. 미래 실제값은 계산에 사용하지 않습니다."
     )
 else:
-    st.subheader("내일 날씨예보 입력")
+    weather_day_label = "오늘" if mode == "오늘 공식 실시간 관측" else "내일"
+    st.subheader(f"{weather_day_label} 날씨예보 입력")
     weather_table = forecast[[
         "timestamp", "temperature_2m", "relative_humidity_2m",
         "wind_speed_10m", "shortwave_radiation",
     ]].copy()
     weather_table.columns = ["시간", "기온(°C)", "습도(%)", "풍속(km/h)", "일사량(W/m²)"]
     st.dataframe(weather_table, hide_index=True, width="stretch")
-    st.caption("Open-Meteo의 제주시 기준 내일 시간별 예보를 30분 동안 저장해 사용합니다.")
+    st.caption(
+        f"Open-Meteo의 제주시 기준 {weather_day_label} 시간별 예보를 "
+        "30분 동안 저장해 사용합니다."
+    )
 
 st.subheader("추천과 즉시 충전 비교")
 compare1, compare2 = st.columns(2)
