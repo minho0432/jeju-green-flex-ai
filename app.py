@@ -74,7 +74,7 @@ if not st.session_state.logged_in:
             key="login_password",
         )
 
-        if st.button("로그인", use_container_width=True):
+        if st.button("로그인", width="stretch"):
             if login_name.strip():
                 st.session_state.logged_in = True
                 st.session_state.user_name = login_name.strip()
@@ -111,7 +111,7 @@ if not st.session_state.logged_in:
             key="signup_password",
         )
 
-        if st.button("가입하고 시작하기", use_container_width=True):
+        if st.button("가입하고 시작하기", width="stretch"):
             if signup_name.strip():
                 st.session_state.logged_in = True
                 st.session_state.user_name = signup_name.strip()
@@ -144,7 +144,7 @@ if not FORECAST_PATH.exists() or not METRICS_PATH.exists():
 metrics = json.loads(METRICS_PATH.read_text(encoding="utf-8"))
 
 
-@st.cache_resource
+@st.cache_resource(show_spinner=False)
 def load_forecast_only_models():
     return train_forecast_only_models()
 
@@ -160,9 +160,10 @@ def load_today_weather():
 
 
 @st.cache_data(ttl=1200, show_spinner=False)
-def load_official_grid(_service_key: str):
+def load_official_grid(service_key: str):
     # 20분 캐시: 개발계정의 일 100회 한도를 넘기지 않도록 보호한다.
-    return fetch_jeju_grid_live(_service_key)
+    # 인증키가 바뀌면 새 키로 다시 호출할 수 있도록 캐시 키에 포함한다.
+    return fetch_jeju_grid_live(service_key)
 
 
 @st.cache_data
@@ -196,6 +197,10 @@ with st.sidebar:
             "실시간 보정 재현은 API 없이 흐름 검증, 내일 예보는 날씨예보 실험입니다."
         ),
     )
+    st.caption(
+        "오늘 공식 실시간 관측만 KPX API를 사용합니다. "
+        "실시간 보정 재현은 API 없이 과거 실측으로 보정 절차를 검증하는 모드입니다."
+    )
 
 is_official_live = False
 live_samples = None
@@ -220,26 +225,46 @@ elif mode == "오늘 공식 실시간 관측":
         st.info("키가 없어도 다른 세 가지 모드는 정상 작동합니다.")
         st.stop()
     try:
-        live_models, live_history = load_forecast_only_models()
-        today_weather = load_today_weather()
-        live_samples = load_official_grid(service_key)
-        live_hourly = grid_samples_to_hourly(live_samples)
-        observation_as_of = latest_complete_hour(live_hourly)
-        live_age_minutes = observation_age_minutes(live_samples)
-        original_forecast = build_live_prediction(
-            live_models, live_history, today_weather
-        )
-        forecast, realtime_metadata = adjust_forecast_with_live_renewables(
-            original_forecast,
-            live_history,
-            live_hourly,
-            as_of=observation_as_of,
-        )
+        with st.status("오늘의 공식 실시간 자료를 준비하고 있습니다.", expanded=True) as live_status:
+            st.write("1/4 저장된 재생에너지·수요 모델 확인")
+            live_models, live_history = load_forecast_only_models()
+
+            st.write("2/4 Open-Meteo 오늘 날씨예보 수신")
+            today_weather = load_today_weather()
+
+            st.write("3/4 KPX 제주 5분 계통자료 수신")
+            live_samples = load_official_grid(service_key)
+            live_hourly = grid_samples_to_hourly(live_samples)
+            observation_as_of = latest_complete_hour(live_hourly)
+            live_age_minutes = observation_age_minutes(live_samples)
+
+            st.write("4/4 도착한 실측으로 남은 시간 예측 보정")
+            original_forecast = build_live_prediction(
+                live_models, live_history, today_weather
+            )
+            forecast, realtime_metadata = adjust_forecast_with_live_renewables(
+                original_forecast,
+                live_history,
+                live_hourly,
+                as_of=observation_as_of,
+            )
+            live_status.update(
+                label="KPX 공식 실측을 반영한 예측 보정이 완료됐습니다.",
+                state="complete",
+                expanded=False,
+            )
     except (JejuGridApiError, RuntimeError, ValueError, OSError) as error:
         st.error(str(error))
-        st.info(
-            "API가 잠시 실패해도 `검증된 과거 재현` 또는 `실시간 보정 재현`은 사용할 수 있습니다."
-        )
+        if isinstance(error, JejuGridApiError):
+            st.info(
+                "KPX API가 성공하지 않아 실제 실시간 보정은 실행하지 않았습니다. "
+                "활용신청·사용기간·인증키·호출한도를 확인하세요."
+            )
+        else:
+            st.info(
+                "저장 모델 또는 날씨예보 준비 단계에서 중단됐습니다. "
+                "API 없이 확인하려면 실시간 보정 재현을 사용하세요."
+            )
         st.stop()
     observation_hour = int(observation_as_of.hour)
     has_actual = False
@@ -258,7 +283,7 @@ elif mode == "실시간 보정 재현":
             help="선택 시각까지의 실제값만 공개하고 이후 시간은 다시 예측합니다.",
         )
     replay_date = original_forecast["timestamp"].dt.normalize().iloc[0]
-    observation_as_of = replay_date + pd.Timedelta(hours=observation_hour)
+    observation_as_of = replay_date + pd.to_timedelta(int(observation_hour), unit="h")
     forecast, realtime_metadata = adjust_forecast_with_observations(
         original_forecast,
         load_history(),
@@ -329,7 +354,7 @@ with st.sidebar:
         f"{st.session_state.user_type}"
     )
 
-    if st.button("로그아웃", use_container_width=True):
+    if st.button("로그아웃", width="stretch"):
         st.session_state.logged_in = False
         st.session_state.user_name = ""
         st.rerun()
@@ -399,7 +424,7 @@ if used.empty:
     recommended_times = "없음"
 else:
     first_time = used["timestamp"].min()
-    last_time = used["timestamp"].max() + pd.Timedelta(hours=1)
+    last_time = used["timestamp"].max() + pd.Timedelta("1h")
     recommended_times = f"{first_time:%H:%M}~{last_time:%H:%M}"
 
 display_points = (
@@ -451,7 +476,7 @@ fig.update_layout(
     legend={"orientation": "h", "y": 1.14},
     margin={"t": 35, "b": 30},
 )
-st.plotly_chart(fig, use_container_width=True)
+st.plotly_chart(fig, width="stretch")
 st.caption(
     "추천점수는 예측 재생에너지를 예측 제주 전력수요로 나눈 공급여력의 과거 백분위입니다."
 )
@@ -492,7 +517,7 @@ if has_actual:
             name="실제값", line={"color": "#243447", "width": 2, "dash": "dot"},
         )
         renewable_fig.update_layout(height=350, yaxis_title="MWh", margin={"t": 20, "b": 30})
-        st.plotly_chart(renewable_fig, use_container_width=True)
+        st.plotly_chart(renewable_fig, width="stretch")
 
     with demand_tab:
         demand_fig = go.Figure()
@@ -514,7 +539,7 @@ if has_actual:
             name="실제값", line={"color": "#243447", "width": 2, "dash": "dot"},
         )
         demand_fig.update_layout(height=350, yaxis_title="MWh", margin={"t": 20, "b": 30})
-        st.plotly_chart(demand_fig, use_container_width=True)
+        st.plotly_chart(demand_fig, width="stretch")
 elif has_observed:
     st.subheader("실측 도착 전후 예측 보정")
     with st.container():
@@ -533,7 +558,7 @@ elif has_observed:
             line={"color": "#243447", "width": 2},
         )
         renewable_fig.update_layout(height=350, yaxis_title="MWh", margin={"t": 20, "b": 30})
-        st.plotly_chart(renewable_fig, use_container_width=True)
+        st.plotly_chart(renewable_fig, width="stretch")
     st.caption(
         "완료된 최근 3시간의 실제-예측 오차를 사용합니다. 다음 한 시간은 크게 고치고, "
         "먼 시간일수록 보정 영향이 줄어듭니다. 미래 실제값은 계산에 사용하지 않습니다."
@@ -545,7 +570,7 @@ else:
         "wind_speed_10m", "shortwave_radiation",
     ]].copy()
     weather_table.columns = ["시간", "기온(°C)", "습도(%)", "풍속(km/h)", "일사량(W/m²)"]
-    st.dataframe(weather_table, hide_index=True, use_container_width=True)
+    st.dataframe(weather_table, hide_index=True, width="stretch")
     st.caption("Open-Meteo의 제주시 기준 내일 시간별 예보를 30분 동안 저장해 사용합니다.")
 
 st.subheader("추천과 즉시 충전 비교")
@@ -607,7 +632,7 @@ if has_actual:
         table["scheduled_kwh"] * table["정산 보너스 단가"]
     ).round(0)
     columns.extend(["실제 점수", "정산 보너스 단가", "정산 보너스 P"])
-st.dataframe(table[columns], hide_index=True, use_container_width=True)
+st.dataframe(table[columns], hide_index=True, width="stretch")
 st.caption(f"총 지급 포인트는 한 번 충전당 최대 {session_point_cap:,.0f}P로 제한합니다.")
 
 with st.expander("Green 충전 크레딧은 어떻게 정했나요?"):
