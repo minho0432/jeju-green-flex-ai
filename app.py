@@ -14,6 +14,7 @@ import streamlit as st
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "scripts"))
+
 from live_forecast import (  # noqa: E402
     build_live_prediction,
     fetch_open_meteo_forecast,
@@ -273,72 +274,12 @@ except ValueError as error:
     st.error(str(error))
     st.stop()
 
-if has_actual:
-    st.info(
-        f"**{mode_label} · {display_date}** — 이 날짜를 미래 하루처럼 가리고 예측한 뒤 실제값과 비교합니다."
-    )
-elif has_observed:
-    if is_official_live:
-        latest = live_samples.iloc[-1]
-        status_message = (
-            f"**{mode_label} · 최근 자료 {latest['timestamp']:%Y-%m-%d %H:%M} "
-            f"({live_age_minutes:.0f}분 전)** — 공식 태양광·풍력 실측으로 오늘 남은 "
-            "예측과 충전계획을 보정했습니다. API 호출은 일일 한도를 보호하기 위해 "
-            "20분 동안 저장됩니다."
-        )
-        if live_age_minutes <= 35:
-            st.success(status_message)
-        else:
-            st.warning(
-                status_message
-                + " 최신 자료가 35분 넘게 지연되어 결과를 참고용으로만 보세요."
-            )
-        live1, live2, live3, live4 = st.columns(4)
-        live1.metric("현재 신재생 발전", f"{latest['renewable_total_mw']:.1f} MW")
-        live2.metric("현재 태양광", f"{latest['solar_mw']:.1f} MW")
-        live3.metric("현재 풍력", f"{latest['wind_mw']:.1f} MW")
-        live4.metric("현재 송전단수요", f"{latest['demand_transmission_mw']:.1f} MW")
-        st.metric(
-            "최근 재생에너지 예측 편차",
-            f"{realtime_metadata['recent_renewable_bias_mwh']:+.1f} MWh",
-            help="완료된 최근 3시간의 실제 태양광+풍력 MWh에서 AI 예측을 뺀 값입니다.",
-        )
-        st.caption(
-            "화면의 MW는 순간 발전 세기이고, AI 보정에는 한 시간의 5분 표본 "
-            "12개가 모두 모인 경우에만 합산한 MWh를 사용합니다."
-        )
-        complete_hours = int((live_hourly["coverage_ratio"] >= 1.0).sum())
-        with st.expander("공식 자료 연결 상태와 계산 기준"):
-            st.write(f"5분 관측 개수: **{len(live_samples):,}개**")
-            st.write(f"완료된 시간 수: **{complete_hours}시간**")
-            st.write(f"보정에 사용한 최신 완료시간: **{observation_as_of:%H:%M}**")
-            st.write(f"가장 최근 관측의 나이: **{live_age_minutes:.0f}분**")
-            st.write("완료 기준: **5분 관측 12개 중 12개(100%)**")
-            st.write("공식 출처: **한국전력거래소 제주계통운영정보 API**")
-    else:
-        st.info(
-            f"**{mode_label} · {display_date} {observation_hour:02d}:00 기준** — "
-            "선택 시각까지 도착한 과거 실측값만 이용해 이후 예측과 충전계획을 다시 계산합니다. "
-            "공식 API가 없어도 전체 흐름을 확인하는 재현 모드입니다."
-        )
-        st.metric(
-            "최근 재생에너지 예측 편차",
-            f"{realtime_metadata['recent_renewable_bias_mwh']:+.1f} MWh",
-            help="실제값-예측값입니다. 음수면 실제 발전량이 예측보다 적었다는 뜻입니다.",
-        )
-else:
-    st.warning(
-        f"**{mode_label} · {display_date}** — 실제 내일 날씨예보를 사용하지만 과거 기상예보 오차까지 검증한 모델은 아닙니다. "
-        "발표의 성능 근거는 검증 모드 결과를 사용하세요."
-    )
+used = plan["ai_schedule"][plan["ai_schedule"]["scheduled_kwh"] > 1e-6].sort_values("timestamp")
+score_col = plan.get("score_column") or "green_score"
+plot_df = forecast.sort_values("timestamp")
+if score_col not in plot_df.columns:
+    score_col = "green_score" if "green_score" in plot_df.columns else plot_df.columns[-1]
 
-if not plan["feasible"]:
-    st.warning(
-        f"선택한 시간과 충전기 출력으로는 {target_soc}%까지 도달할 수 없습니다. "
-        f"가능한 범위에서는 약 {plan['reached_soc']:.1f}%까지 충전합니다."
-    )
-
-used = plan["ai_schedule"][plan["ai_schedule"]["scheduled_kwh"] > 0]
 if used.empty:
     recommended_times = "없음"
 else:
@@ -557,47 +498,88 @@ st.caption(f"총 지급 포인트는 한 번 충전당 최대 {session_point_cap
 with st.expander("Green 충전 크레딧은 어떻게 정했나요?"):
     st.markdown(
         f"""
-        현재 크레딧은 **충전사업자·지자체·후원기업 중 한 곳이 월 {monthly_budget_won:,.0f}원의 캠페인 예산을 제공한다고 가정한 시뮬레이션**입니다.
+현재 크레딧은 **충전사업자·지자체·후원기업 중 한 곳이
+월 {monthly_budget_won:,.0f}원의 캠페인 예산을 제공한다고 가정한
+시뮬레이션**입니다.
 
-        - 최대 단가 근거: {monthly_budget_won:,.0f}원 ÷ {target_shifted_kwh:,.0f}kWh = {point_policy['maximum_total_rate']:,.1f}P/kWh
-        - 참여 보장: 추천시간과 겹친 충전량 × {base_point_rate:,.1f}P/kWh
-        - 50점 미만: 성과 보너스 0P/kWh
-        - 50~69점: 성과 보너스 {partial_bonus_rate:,.1f}P/kWh
-        - 70점 이상: 성과 보너스 {bonus_point_rate:,.1f}P/kWh
-        - 세션 상한: {session_point_cap:,.0f}P
+- 최대 단가 근거:
+  {monthly_budget_won:,.0f}원 ÷ {target_shifted_kwh:,.0f}kWh
+  = {point_policy['maximum_total_rate']:,.1f}P/kWh
+- 참여 보장:
+  추천시간과 겹친 충전량 × {base_point_rate:,.1f}P/kWh
+- 50점 미만:
+  성과 보너스 0P/kWh
+- 50~69점:
+  성과 보너스 {partial_bonus_rate:,.1f}P/kWh
+- 70점 이상:
+  성과 보너스 {bonus_point_rate:,.1f}P/kWh
+- 세션 상한:
+  {session_point_cap:,.0f}P
 
-        1P는 다음 충전에서 1원처럼 사용하는 충전 크레딧으로 정의합니다. 실제 서비스에는 충전 세션 ID,
-        실제 충전량, 결제기록, 중복지급 방지 원장과 예산 제공자 계약이 필요합니다.
-        """
+1P는 다음 충전에서 1원처럼 사용하는 충전 크레딧으로 정의합니다.
+
+실제 서비스에는 충전 세션 ID, 실제 충전량, 결제기록,
+중복지급 방지 원장과 예산 제공자 계약이 필요합니다.
+"""
     )
 
+
 with st.expander("AI 성능을 어떻게 검증했나요?"):
-    st.write("앞선 4개 시간 구간으로 모델을 선택하고, 마지막 30일은 선택에 쓰지 않고 최종 확인했습니다.")
-    for target, label in [("renewable_mwh", "재생에너지"), ("demand_mwh", "제주 전력수요")]:
+    st.write(
+        "앞선 4개 시간 구간으로 모델을 선택하고, "
+        "마지막 30일은 선택에 쓰지 않고 최종 확인했습니다."
+    )
+
+    for target, label in [
+        ("renewable_mwh", "재생에너지"),
+        ("demand_mwh", "제주 전력수요"),
+    ]:
         values = metrics["forecast_only_targets"][target]
         baseline_mae = values["baseline_month_hour"]["mae"]
+
         st.write(
-            f"**{label} 내일 예보형 모델** — 최종 30일 MAE {values['ai']['mae']}, "
+            f"**{label} 내일 예보형 모델** — "
+            f"최종 30일 MAE {values['ai']['mae']}, "
             f"월·시간 기준 MAE {baseline_mae}, "
             f"개선율 {values['mae_improvement_percent']}%"
         )
-    st.write("실제 과거 기상예보 원본이 아닌 관측날씨로 재현했으므로, 실제 기상예보 오차는 별도 한계입니다.")
+
+    st.write(
+        "실제 과거 기상예보 원본이 아닌 관측날씨로 재현했으므로, "
+        "실제 기상예보 오차는 별도 한계입니다."
+    )
+
 
 with st.expander("현재 구현한 것과 아직 구현하지 않은 것"):
     st.markdown(
         """
-        **구현:** 2023~2025년 25,559시간 병합, 후보 모델 시간순 비교, 오늘·내일 날씨예보 조회,
-        재생에너지·전력수요 예측,
-        KPX 제주 5분 태양광·풍력·수요·공급 실측 연결, 도착한 재생에너지 실측으로 남은 예측과
-        충전시간을 다시 계산하는 보정, API 장애용 과거 재현, 보수적 연속 충전시간,
-        Green Point 정책, 목표 SOC 불가능 경고, 자동검사.
+**구현**
 
-        **미구현:** 충전사업자 결제 연동, 실제 포인트 지급, 실제 충전기 제어,
-        HVDC·발전기 정비·출력제어 예고, 공식 탄소감축·REC 인증.
-        """
+- 2023~2025년 25,559시간 병합
+- 후보 모델 시간순 비교
+- 오늘·내일 날씨예보 조회
+- 재생에너지·전력수요 예측
+- KPX 제주 5분 태양광·풍력·수요·공급 실측 연결
+- 도착한 재생에너지 실측 기반 남은 예측 및 충전시간 재계산
+- API 장애용 과거 재현
+- 보수적 연속 충전시간 추천
+- Green Point 정책
+- 목표 SOC 불가능 경고
+- 자동검사
+
+**미구현**
+
+- 충전사업자 결제 연동
+- 실제 포인트 지급
+- 실제 충전기 제어
+- HVDC·발전기 정비·출력제어 예고
+- 공식 탄소감축·REC 인증
+"""
     )
 
+
 st.caption(
-    "주의: 본 MVP는 충전 의사결정과 Green Point 정책 시뮬레이션입니다. 실제 충전요금 절감, "
-    "포인트 지급, 탄소감축량, REC 인증 또는 충전기 제어를 보장하지 않습니다."
+    "주의: 본 MVP는 충전 의사결정과 Green Point 정책 시뮬레이션입니다. "
+    "실제 충전요금 절감, 포인트 지급, 탄소감축량, REC 인증 또는 "
+    "충전기 제어를 보장하지 않습니다."
 )
