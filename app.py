@@ -150,19 +150,19 @@ def load_forecast_only_models():
     return train_forecast_only_models()
 
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=3600)
 def load_tomorrow_weather():
     return fetch_open_meteo_forecast(target_day_offset=1)
 
 
-@st.cache_data(ttl=1800)
+@st.cache_data(ttl=3600)
 def load_today_weather():
     return fetch_open_meteo_forecast(target_day_offset=0)
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def load_official_grid(service_key: str):
-    # 성공뿐 아니라 0건·공식 API 오류도 30분간 캐시한다. Streamlit이 다시
+    # 성공뿐 아니라 0건·공식 API 오류도 1시간 캐시한다. Streamlit이 다시
     # 실행될 때 실패 요청을 반복해 개발계정 일 100회 한도를 소진하지 않는다.
     try:
         return fetch_jeju_grid_live(service_key), None, None
@@ -510,17 +510,21 @@ st.caption(
 )
 
 if not used.empty:
-    best_slot = used.sort_values([score_to_show, "timestamp"], ascending=[False, True]).iloc[0]
-    candidates = forecast[
-        (forecast["timestamp"].dt.hour >= planning_start_hour)
-        & (forecast["timestamp"].dt.hour < departure_hour)
-    ]
-    score_difference = best_slot[score_to_show] - candidates[score_to_show].mean()
-    st.success(
-        f"추천 이유: {best_slot['timestamp']:%H시}의 보수적 기회점수가 사용 가능시간 평균보다 "
-        f"{score_difference:+.1f}점 높습니다. 재생에너지는 {best_slot['predicted_renewable_mwh']:.1f}MWh, "
-        f"제주 전력수요는 {best_slot['predicted_demand_mwh']:.1f}MWh로 예상됩니다."
-    )
+    with st.spinner("추천 이유를 분석하고 있습니다..."):
+        best_slot = used.sort_values(
+            [score_to_show, "timestamp"], ascending=[False, True]
+        ).iloc[0]
+        candidates = forecast[
+            (forecast["timestamp"].dt.hour >= planning_start_hour)
+            & (forecast["timestamp"].dt.hour < departure_hour)
+        ]
+        score_difference = best_slot[score_to_show] - candidates[score_to_show].mean()
+        reason_text = (
+            f"추천 이유: {best_slot['timestamp']:%H시}의 보수적 기회점수가 사용 가능시간 평균보다 "
+            f"{score_difference:+.1f}점 높습니다. 재생에너지는 {best_slot['predicted_renewable_mwh']:.1f}MWh, "
+            f"제주 전력수요는 {best_slot['predicted_demand_mwh']:.1f}MWh로 예상됩니다."
+        )
+    st.success(reason_text)
 
 if has_actual:
     st.subheader("AI 예측과 실제값 비교")
