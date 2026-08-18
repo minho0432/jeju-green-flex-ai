@@ -57,11 +57,14 @@ def train_forecast_only_models() -> tuple[dict[str, object], pd.DataFrame]:
             models["demand_mwh"] = joblib.load(dem_path)
     except Exception:
         pass
-    for target in ("smp", "renewable_mwh", "demand_mwh"):
+    for target in ("renewable_mwh", "demand_mwh"):
         if target in models:
             continue
         model = build_forecast_only_model(target)
-        model.fit(features, history[target])
+        available = history[target].notna()
+        if not available.any():
+            raise ValueError(f"{target} 학습에 사용할 값이 없습니다.")
+        model.fit(features.loc[available], history.loc[available, target])
         models[target] = model
     return models, history
 
@@ -122,7 +125,6 @@ def build_live_prediction(
 
     features = make_live_features(weather)
     result = weather.copy()
-    result["predicted_smp"] = models["smp"].predict(features)
     result["predicted_renewable_mwh"] = np.maximum(
         models["renewable_mwh"].predict(features), 0
     )
@@ -137,12 +139,25 @@ def build_live_prediction(
             history, "demand_mwh", result
         ).to_numpy()
 
-    smp_hw = _half_width(metrics, "smp", 15.0)
+    # 모델 선택 구간에서 정한 혼합비만 사용합니다. 오늘 결과를 보고 임의 조정하지 않습니다.
+    blend = metrics.get("green_time", {}).get("deployment_blend", {})
+    from model_utils import month_hour_baseline
+    renewable_alpha = float(blend.get("renewable_ai_alpha", 1.0))
+    demand_alpha = float(blend.get("demand_ai_alpha", 1.0))
+    renewable_baseline = month_hour_baseline(history, "renewable_mwh", result).to_numpy()
+    demand_baseline = month_hour_baseline(history, "demand_mwh", result).to_numpy()
+    result["predicted_renewable_mwh"] = (
+        renewable_alpha * result["predicted_renewable_mwh"]
+        + (1 - renewable_alpha) * renewable_baseline
+    )
+    result["predicted_demand_mwh"] = (
+        demand_alpha * result["predicted_demand_mwh"]
+        + (1 - demand_alpha) * demand_baseline
+    )
+
     re_hw = _half_width(metrics, "renewable_mwh", 25.0)
     dem_hw = _half_width(metrics, "demand_mwh", 40.0)
 
-    result["predicted_smp_lower"] = result["predicted_smp"] - smp_hw
-    result["predicted_smp_upper"] = result["predicted_smp"] + smp_hw
     result["predicted_renewable_lower"] = np.maximum(
         result["predicted_renewable_mwh"] - re_hw, 0
     )

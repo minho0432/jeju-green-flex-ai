@@ -1,427 +1,277 @@
-"""JEJU Green Time — 대시보드 + KPX 실측 보정."""
+"""Jeju Green Flex AI 해커톤 데모 화면."""
 
 from __future__ import annotations
-from scripts.time_utils import get_effective_start_hour
 
+import json
 import os
 import sys
-from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import streamlit as st
+
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "scripts"))
-
-from reward_policy import calculate_green_point  # noqa: E402
 
 from live_forecast import (  # noqa: E402
     build_live_prediction,
     fetch_open_meteo_forecast,
     train_forecast_only_models,
 )
-from optimizer import make_plan  # noqa: E402
 from jeju_grid_live import (  # noqa: E402
     JejuGridApiError,
     fetch_jeju_grid_live,
     grid_samples_to_hourly,
     latest_complete_hour,
+    observation_age_minutes,
 )
-from realtime_adjustment import adjust_forecast_with_live_renewables  # noqa: E402
+from optimizer import (  # noqa: E402
+    bonus_rate_for_score,
+    derive_point_policy,
+    make_plan,
+)
+from realtime_adjustment import (  # noqa: E402
+    adjust_forecast_with_live_renewables,
+    adjust_forecast_with_observations,
+)
+from time_utils import get_effective_start_hour  # noqa: E402
+
 
 FORECAST_PATH = ROOT / "outputs" / "demo_predictions.csv"
-KST = ZoneInfo("Asia/Seoul")
-AUTO_REFRESH_MS = 10 * 60 * 1000
+METRICS_PATH = ROOT / "outputs" / "model_metrics.json"
+HISTORY_PATH = ROOT / "data" / "processed" / "train.csv"
 
-st.set_page_config(
-    page_title="JEJU Green Time",
-    page_icon="🌿",
-    layout="centered",
-    initial_sidebar_state="collapsed",
-)
+st.set_page_config(page_title="Jeju Green Flex AI", page_icon="🌱", layout="wide")
+st.title("🌱 Jeju Green Flex AI")
+st.caption("가격절약 기회와 친환경 충전을 함께 고려하는 제주 개인 EV 충전시간 추천")
 
-_refresh_count = 0
-try:
-    from streamlit_autorefresh import st_autorefresh
+if not FORECAST_PATH.exists() or not METRICS_PATH.exists():
+    st.error("AI 결과가 없습니다. 터미널에서 `python scripts/train_models.py`를 먼저 실행하세요.")
+    st.stop()
 
-    _refresh_count = st_autorefresh(interval=AUTO_REFRESH_MS, key="jeju_gt_auto")
-except Exception:
-    pass
-
-st.markdown(
-    """
-<style>
-html, body, [class*="css"] {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans KR', sans-serif;
-}
-.block-container {
-  padding-top: 1.25rem !important;
-  padding-bottom: 3rem !important;
-  max-width: 720px !important;
-}
-header[data-testid="stHeader"] { background: transparent; }
-#MainMenu, footer { visibility: hidden; }
-.hero { text-align: center; padding: 0.35rem 0 0.85rem 0; }
-.hero-badge {
-  display: inline-block; background: #ecfdf5; color: #047857;
-  font-size: 0.75rem; font-weight: 600; letter-spacing: 0.04em;
-  padding: 0.35rem 0.75rem; border-radius: 999px; margin-bottom: 0.6rem;
-}
-.hero h1 {
-  font-size: 1.55rem !important; font-weight: 700 !important;
-  color: #0f172a !important; margin: 0 0 0.3rem 0 !important;
-}
-.hero p { color: #64748b; font-size: 0.92rem; margin: 0; }
-.rec-card {
-  background: linear-gradient(160deg, #0f766e 0%, #0d9488 45%, #14b8a6 100%);
-  border-radius: 22px; padding: 1.35rem 1.25rem; color: #fff;
-  box-shadow: 0 12px 36px rgba(15, 118, 110, 0.28);
-  margin: 0.4rem 0 1rem 0;
-}
-.rec-card .label { font-size: 0.78rem; opacity: 0.9; margin-bottom: 0.3rem; }
-.rec-card .time { font-size: 1.85rem; font-weight: 700; margin-bottom: 0.4rem; }
-.rec-card .sub { font-size: 0.88rem; opacity: 0.92; }
-.rec-card .chips { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-top: 0.85rem; }
-.rec-card .chip {
-  background: rgba(255,255,255,0.18); border-radius: 999px;
-  padding: 0.3rem 0.65rem; font-size: 0.76rem; font-weight: 600;
-}
-.section-title {
-  font-size: 0.9rem; font-weight: 700; color: #0f172a; margin: 1.1rem 0 0.5rem 0;
-}
-div[data-testid="stMetric"] {
-  background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 14px; padding: 0.75rem 0.9rem;
-}
-.status-bar {
-  display: flex; flex-wrap: wrap; gap: 0.35rem; justify-content: center; margin: 0 0 0.5rem 0;
-}
-.status-chip {
-  font-size: 0.7rem; font-weight: 600; padding: 0.28rem 0.6rem; border-radius: 999px;
-}
-.status-on { background: #d1fae5; color: #065f46; }
-.status-off { background: #f1f5f9; color: #64748b; }
-.live-line { text-align: center; color: #64748b; font-size: 0.75rem; margin-bottom: 0.6rem; }
-.warning-box {
-  background: #fff7ed; border: 1px solid #fed7aa; border-radius: 14px;
-  padding: 0.85rem 1rem; color: #9a3412; font-size: 0.88rem; margin: 0.6rem 0;
-}
-.footer-note {
-  text-align: center; color: #94a3b8; font-size: 0.72rem; margin-top: 1.75rem;
-}
-</style>
-""",
-    unsafe_allow_html=True,
-)
-
-st.markdown(
-    """
-<div class="hero">
-  <div class="hero-badge">JEJU · GREEN TIME</div>
-  <h1>언제 충전할까요?</h1>
-  <p>재생에너지가 많은 시간에 맞춰 충전 구간을 알려 드려요</p>
-</div>
-""",
-    unsafe_allow_html=True,
-)
+metrics = json.loads(METRICS_PATH.read_text(encoding="utf-8"))
 
 
-def get_service_key() -> str:
+@st.cache_resource
+def load_forecast_only_models():
+    return train_forecast_only_models()
+
+
+@st.cache_data(ttl=1800)
+def load_tomorrow_weather():
+    return fetch_open_meteo_forecast(target_day_offset=1)
+
+
+@st.cache_data(ttl=1800)
+def load_today_weather():
+    return fetch_open_meteo_forecast(target_day_offset=0)
+
+
+@st.cache_data(ttl=1200, show_spinner=False)
+def load_official_grid(_service_key: str):
+    # 20분 캐시: 개발계정의 일 100회 한도를 넘기지 않도록 보호한다.
+    return fetch_jeju_grid_live(_service_key)
+
+
+@st.cache_data
+def load_history():
+    return pd.read_csv(HISTORY_PATH, parse_dates=["timestamp"])
+
+
+def get_data_go_kr_service_key() -> str:
+    """로컬 환경변수 또는 Streamlit 비밀설정에서 키를 읽는다."""
     key = os.environ.get("DATA_GO_KR_SERVICE_KEY", "").strip()
     if key:
         return key
     try:
         return str(st.secrets.get("DATA_GO_KR_SERVICE_KEY", "")).strip()
-    except Exception:
+    except (FileNotFoundError, KeyError):
         return ""
 
 
-def now_kst() -> datetime:
-    return datetime.now(KST)
+with st.sidebar:
+    st.header("0. 시연 모드")
+    mode = st.radio(
+        "어떤 결과를 볼까요?",
+        [
+            "검증된 과거 재현",
+            "오늘 공식 실시간 관측",
+            "실시간 보정 재현",
+            "내일 예보 실험",
+        ],
+        help=(
+            "과거 재현은 성능 검증, 오늘 공식 실시간 관측은 KPX 5분 자료, "
+            "실시간 보정 재현은 API 없이 흐름 검증, 내일 예보는 날씨예보 실험입니다."
+        ),
+    )
 
-
-@st.cache_resource
-def load_models():
-    return train_forecast_only_models()
-
-
-@st.cache_data(ttl=600, show_spinner=False)
-def load_weather(day_offset: int, _bucket: int):
-    return fetch_open_meteo_forecast(target_day_offset=day_offset)
-
-
-@st.cache_data
-def load_demo():
-    return pd.read_csv(FORECAST_PATH, parse_dates=["timestamp"])
-
-
-def ensure_scores(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    if "green_score" not in out.columns and "renewable_opportunity_score" in out.columns:
-        out["green_score"] = out["renewable_opportunity_score"]
-    if "planning_score" not in out.columns:
-        if "conservative_renewable_score" in out.columns:
-            out["planning_score"] = out["conservative_renewable_score"]
-        elif "green_score" in out.columns:
-            out["planning_score"] = out["green_score"]
-    if "predicted_smp" not in out.columns:
-        out["predicted_smp"] = 100.0
-    if "predicted_smp_upper" not in out.columns:
-        out["predicted_smp_upper"] = out["predicted_smp"] * 1.1
-    return out
-
-
-def chart_green_score(plot_df, used, score_col):
-    used_set = set(used["timestamp"]) if not used.empty else set()
-    colors = ["#0f766e" if t in used_set else "#99f6e4" for t in plot_df["timestamp"]]
-    fig = go.Figure()
-    fig.add_trace(
-        go.Bar(
-            x=plot_df["timestamp"],
-            y=plot_df[score_col],
-            marker_color=colors,
-            hovertemplate="%{x|%H시}<br>점수 %{y:.0f}<extra></extra>",
+is_official_live = False
+live_samples = None
+live_hourly = None
+if mode == "검증된 과거 재현":
+    forecast = pd.read_csv(FORECAST_PATH, parse_dates=["timestamp"])
+    has_actual = True
+    has_observed = False
+    realtime_metadata = None
+    display_date = forecast["timestamp"].dt.strftime("%Y-%m-%d").iloc[0]
+    mode_label = "검증 모드"
+elif mode == "오늘 공식 실시간 관측":
+    service_key = get_data_go_kr_service_key()
+    if not service_key:
+        st.error("공공데이터포털 인증키가 아직 설정되지 않았습니다.")
+        st.markdown(
+            "[한국전력거래소 제주계통운영정보 API 활용신청]"
+            "(https://www.data.go.kr/data/15158505/openapi.do) 후 "
+            "Streamlit Cloud의 **Settings → Secrets**에 아래 한 줄을 넣으세요."
         )
-    )
-    fig.add_hline(y=70, line_dash="dot", line_color="#94a3b8", annotation_text="70점", annotation_position="right")
-    fig.update_layout(
-        height=260,
-        margin=dict(l=40, r=20, t=20, b=40),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        xaxis=dict(showgrid=False, tickformat="%H시"),
-        yaxis=dict(showgrid=True, gridcolor="#f1f5f9", range=[0, 100], title="점수"),
-        showlegend=False,
-    )
-    return fig
-
-
-def chart_renewable_weather(plot_df, used):
-    fig = make_subplots(specs=[[{"secondary_y": True}]])
-    if "predicted_renewable_mwh" in plot_df.columns:
-        fig.add_trace(
-            go.Scatter(
-                x=plot_df["timestamp"],
-                y=plot_df["predicted_renewable_mwh"],
-                mode="lines+markers",
-                name="예측 재생 (MWh)",
-                line=dict(color="#059669", width=3),
-            ),
-            secondary_y=False,
+        st.code('DATA_GO_KR_SERVICE_KEY = "발급받은_일반인증키"', language="toml")
+        st.info("키가 없어도 다른 세 가지 모드는 정상 작동합니다.")
+        st.stop()
+    try:
+        live_models, live_history = load_forecast_only_models()
+        today_weather = load_today_weather()
+        live_samples = load_official_grid(service_key)
+        live_hourly = grid_samples_to_hourly(live_samples)
+        observation_as_of = latest_complete_hour(live_hourly)
+        live_age_minutes = observation_age_minutes(live_samples)
+        original_forecast = build_live_prediction(
+            live_models, live_history, today_weather
         )
-        if "predicted_renewable_lower" in plot_df.columns and "predicted_renewable_upper" in plot_df.columns:
-            fig.add_trace(
-                go.Scatter(
-                    x=list(plot_df["timestamp"]) + list(plot_df["timestamp"][::-1]),
-                    y=list(plot_df["predicted_renewable_upper"])
-                    + list(plot_df["predicted_renewable_lower"][::-1]),
-                    fill="toself",
-                    fillcolor="rgba(16, 185, 129, 0.15)",
-                    line=dict(color="rgba(0,0,0,0)"),
-                    name="예측 구간",
-                    hoverinfo="skip",
-                ),
-                secondary_y=False,
-            )
-    if "shortwave_radiation" in plot_df.columns:
-        fig.add_trace(
-            go.Scatter(
-                x=plot_df["timestamp"],
-                y=plot_df["shortwave_radiation"],
-                mode="lines",
-                name="일사량 (W/m²)",
-                line=dict(color="#f59e0b", width=2, dash="dot"),
-            ),
-            secondary_y=True,
+        forecast, realtime_metadata = adjust_forecast_with_live_renewables(
+            original_forecast,
+            live_history,
+            live_hourly,
+            as_of=observation_as_of,
         )
-    if not used.empty:
-        for _, row in used.iterrows():
-            fig.add_vrect(
-                x0=row["timestamp"],
-                x1=row["timestamp"] + pd.Timedelta(hours=1),
-                fillcolor="rgba(15, 118, 110, 0.12)",
-                line_width=0,
-            )
-    fig.update_layout(
-        height=300,
-        margin=dict(l=40, r=40, t=30, b=40),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        legend=dict(orientation="h", y=1.12),
-        xaxis=dict(showgrid=False, tickformat="%H시"),
-    )
-    fig.update_yaxes(title_text="재생 MWh", secondary_y=False, gridcolor="#f1f5f9")
-    fig.update_yaxes(title_text="일사량", secondary_y=True, showgrid=False)
-    return fig
-
-
-def chart_charge_schedule(used):
-    fig = go.Figure(
-        go.Bar(
-            x=used["timestamp"],
-            y=used["scheduled_kwh"],
-            marker_color="#0d9488",
-            text=used["scheduled_kwh"].round(1),
-            textposition="outside",
-            hovertemplate="%{x|%H시}<br>%{y:.1f} kWh<extra></extra>",
+    except (JejuGridApiError, RuntimeError, ValueError, OSError) as error:
+        st.error(str(error))
+        st.info(
+            "API가 잠시 실패해도 `검증된 과거 재현` 또는 `실시간 보정 재현`은 사용할 수 있습니다."
         )
-    )
-    fig.update_layout(
-        height=240,
-        margin=dict(l=40, r=20, t=20, b=40),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        xaxis=dict(tickformat="%H시", showgrid=False),
-        yaxis=dict(title="kWh", gridcolor="#f1f5f9"),
-        showlegend=False,
-    )
-    return fig
-
-
-def chart_soc_progress(current, target, reached):
-    fig = go.Figure(
-        go.Indicator(
-            mode="gauge+number+delta",
-            value=reached,
-            delta={"reference": current, "increasing": {"color": "#059669"}},
-            number={"suffix": "%"},
-            title={"text": "예상 도착 배터리"},
-            gauge={
-                "axis": {"range": [0, 100]},
-                "bar": {"color": "#0f766e"},
-                "steps": [
-                    {"range": [0, current], "color": "#e2e8f0"},
-                    {"range": [current, target], "color": "#ccfbf1"},
-                ],
-                "threshold": {
-                    "line": {"color": "#f59e0b", "width": 3},
-                    "thickness": 0.8,
-                    "value": target,
-                },
-            },
+        st.stop()
+    observation_hour = int(observation_as_of.hour)
+    has_actual = False
+    has_observed = True
+    is_official_live = True
+    display_date = forecast["timestamp"].dt.strftime("%Y-%m-%d").iloc[0]
+    mode_label = "KPX 공식 5분 실측"
+elif mode == "실시간 보정 재현":
+    original_forecast = pd.read_csv(FORECAST_PATH, parse_dates=["timestamp"])
+    with st.sidebar:
+        observation_hour = st.slider(
+            "실측값이 도착한 현재 시각",
+            0,
+            18,
+            10,
+            help="선택 시각까지의 실제값만 공개하고 이후 시간은 다시 예측합니다.",
         )
+    replay_date = original_forecast["timestamp"].dt.normalize().iloc[0]
+    observation_as_of = replay_date + pd.Timedelta(hours=observation_hour)
+    forecast, realtime_metadata = adjust_forecast_with_observations(
+        original_forecast,
+        load_history(),
+        as_of=observation_as_of,
     )
-    fig.update_layout(height=250, margin=dict(l=20, r=20, t=40, b=10), paper_bgcolor="rgba(0,0,0,0)")
-    return fig
+    has_actual = False
+    has_observed = True
+    display_date = forecast["timestamp"].dt.strftime("%Y-%m-%d").iloc[0]
+    mode_label = "실시간 보정 재현"
+else:
+    try:
+        live_models, live_history = load_forecast_only_models()
+        live_weather = load_tomorrow_weather()
+        forecast = build_live_prediction(live_models, live_history, live_weather)
+    except (RuntimeError, ValueError, OSError) as error:
+        st.error(str(error))
+        st.info("왼쪽에서 `검증된 과거 재현`을 선택하면 인터넷 없이도 시연할 수 있습니다.")
+        st.stop()
+    has_actual = False
+    has_observed = False
+    realtime_metadata = None
+    display_date = forecast["timestamp"].dt.strftime("%Y-%m-%d").iloc[0]
+    mode_label = "실험 모드"
 
+with st.sidebar:
+    st.header("1. 내 차량과 일정")
+    current_soc = st.slider("현재 배터리(%)", 5, 90, 30, 5)
+    target_soc = st.slider("출발할 때 목표 배터리(%)", 10, 100, 80, 5)
+    battery_kwh = st.number_input("배터리 전체 용량(kWh)", 20.0, 120.0, 60.0, 1.0)
+    charger_kw = st.selectbox("충전기 출력(kW)", [3.0, 7.0, 11.0, 50.0], index=1)
+    efficiency_percent = st.slider("충전 효율(%)", 70, 100, 90)
+    start_hour = st.slider("충전을 시작할 수 있는 시각", 0, 22, 8)
+    departure_hour = st.slider("차량을 사용해야 하는 시각", 1, 24, 20)
+    continuous = st.checkbox("충전시간을 연속으로 추천", value=True)
+    conservative = st.checkbox("예측 오차까지 고려해 보수적으로 추천", value=True)
 
-_now = now_kst()
-_bucket = int(_now.timestamp() // 600) + int(_refresh_count)
-_kpx_ok = bool(get_service_key())
-st.markdown(
-    f"""
-<div class="status-bar">
-  <span class="status-chip status-on">날씨 예보 연동됨</span>
-  <span class="status-chip {"status-on" if _kpx_ok else "status-off"}">
-    {"제주 실측 연동됨" if _kpx_ok else "제주 실측 미연결"}
-  </span>
-  <span class="status-chip status-on">10분 자동 갱신</span>
-</div>
-""",
-    unsafe_allow_html=True,
-)
-st.markdown(
-    f'<p class="live-line">{_now.strftime("%Y-%m-%d %H:%M")} KST · 갱신 #{_refresh_count}</p>',
-    unsafe_allow_html=True,
-)
+    st.header("2. Green 충전 크레딧")
+    retail_price = st.number_input("사용자 충전 단가 가정(원/kWh)", 0.0, 1000.0, 320.0, 10.0)
+    st.caption("1P를 다음 충전에서 1원처럼 쓰는 정책 시뮬레이션입니다.")
+    with st.expander("운영자 캠페인 예산 가정", expanded=True):
+        monthly_budget_won = st.number_input(
+            "월 캠페인 예산(원)", 100000.0, 100000000.0, 3000000.0, 100000.0
+        )
+        target_shifted_kwh = st.number_input(
+            "월 목표 Green Time 충전량(kWh)", 1000.0, 1000000.0, 100000.0, 1000.0
+        )
+        session_point_cap = st.number_input(
+            "한 번 충전 크레딧 상한(P)", 100.0, 10000.0, 1500.0, 100.0
+        )
 
-day_choice = st.radio("기준 일", ["오늘", "내일", "데모(과거)"], horizontal=True, label_visibility="collapsed")
+point_policy = derive_point_policy(monthly_budget_won, target_shifted_kwh)
+base_point_rate = point_policy["base_point_rate"]
+partial_bonus_rate = point_policy["partial_bonus_rate"]
+bonus_point_rate = point_policy["maximum_bonus_rate"]
+partial_reward_threshold = 50
+full_reward_threshold = 70
 
-with st.expander("내 차 · 일정", expanded=True):
-    c1, c2 = st.columns(2)
-    with c1:
-        current_soc = st.slider("지금 배터리", 5, 90, 30, 5, format="%d%%")
-        battery_kwh = st.number_input("배터리 용량 (kWh)", 20.0, 120.0, 60.0, 1.0)
-        start_hour = st.slider("충전 시작 가능", 0, 22, 8, format="%d시")
-    with c2:
-        target_soc = st.slider("목표 배터리", 10, 100, 80, 5, format="%d%%")
-        charger_kw = st.selectbox("충전기", [3.0, 7.0, 11.0, 50.0], index=1, format_func=lambda x: f"{x:g} kW")
-        departure_hour = st.slider("출발 시각", 1, 24, 20, format="%d시")
-    efficiency_pct = st.slider("충전 효율", 70, 100, 90, format="%d%%")
-
-effective_start = get_effective_start_hour(
-    selected_start_hour=int(start_hour),
-    now=_now,
-    is_today=day_choice == "오늘",
-)
-
-if day_choice == "오늘" and effective_start >= departure_hour:
-    st.markdown(
-        '<div class="warning-box">오늘 남은 충전 가능 시간이 거의 없어요. 출발 시각을 늘리거나 내일을 선택해 보세요.</div>',
-        unsafe_allow_html=True,
+# 오늘 모드에서는 이미 지난 시간대를 추천하지 않는다.
+planning_start_hour = int(start_hour)
+if mode == "오늘 공식 실시간 관측":
+    planning_start_hour = get_effective_start_hour(
+        selected_start_hour=planning_start_hour,
+        now=pd.Timestamp.now(tz="Asia/Seoul").to_pydatetime(),
+        is_today=True,
     )
-    st.stop()
 
-weather_note = ""
-try:
-    if day_choice == "데모(과거)":
-        if not FORECAST_PATH.exists():
-            st.error("데모 데이터가 없습니다.")
-            st.stop()
-        forecast = ensure_scores(load_demo())
-        weather_note = "과거 검증 데이터"
-    else:
-        offset = 0 if day_choice == "오늘" else 1
-        adjustment_note = ""
-        with st.spinner("날씨·예측 준비 중…"):
-            weather = load_weather(offset, _bucket)
-            models, history = load_models()
-            forecast = ensure_scores(build_live_prediction(models, history, weather))
+# 실측값이 있는 모드에서는 마지막 관측 시각 이전을 다시 추천하지 않는다.
+if has_observed:
+    planning_start_hour = max(planning_start_hour, observation_hour + 1)
+    if planning_start_hour != start_hour:
+        st.info(
+            f"실측값이 {observation_hour:02d}:00까지 도착했으므로 "
+            f"아직 지나지 않은 {planning_start_hour:02d}:00부터 충전계획을 다시 계산합니다."
+        )
 
-            # 오늘 + 키 있음 → KPX 5분 실측으로 남은 시간 예측 보정
-            service_key = get_service_key()
-            if day_choice == "오늘" and service_key:
-                try:
-                    samples = fetch_jeju_grid_live(service_key)
-                    hourly_obs = grid_samples_to_hourly(samples)
-                    as_of = latest_complete_hour(hourly_obs)
-                    forecast, adj_meta = adjust_forecast_with_live_renewables(
-                        forecast,
-                        history,
-                        hourly_obs,
-                        as_of=as_of,
-                    )
-                    forecast = ensure_scores(forecast)
-                    obs_h = adj_meta.get("renewable_observed_hours", "?")
-                    adjustment_note = (
-                        f"KPX 실측 보정 · {obs_h}시간 반영 "
-                        f"(기준 {pd.Timestamp(as_of):%H시})"
-                    )
-                except (JejuGridApiError, ValueError, RuntimeError) as adj_err:
-                    adjustment_note = f"실측 보정 생략 ({adj_err})"
-                except Exception as adj_err:
-                    adjustment_note = f"실측 보정 생략 ({adj_err})"
-
-        peak = weather.loc[weather["shortwave_radiation"].idxmax()]
-        weather_note = f"제주 예보 · 일사 최대 {peak['timestamp']:%H시}"
-        if adjustment_note:
-            weather_note = f"{weather_note} · {adjustment_note}"
-except Exception as err:
-    st.markdown(
-        f'<div class="warning-box">날씨를 불러오지 못했어요.<br/><small>{err}</small></div>',
-        unsafe_allow_html=True,
+if planning_start_hour >= departure_hour:
+    st.error(
+        "출발시각 전의 추천 가능한 시간이 없습니다. 출발시각을 늦추거나, "
+        "공식 실시간 모드에서는 내일 예보 실험으로 바꿔 주세요."
     )
     st.stop()
 
 try:
     plan = make_plan(
         forecast=forecast,
-        current_soc=float(current_soc),
-        target_soc=float(target_soc),
-        battery_kwh=float(battery_kwh),
-        charger_kw=float(charger_kw),
-        efficiency=float(efficiency_pct) / 100.0,
-        start_hour=int(effective_start),
-        departure_hour=int(departure_hour),
-        retail_price=250.0,
-        continuous=True,
-        conservative=True,
+        current_soc=current_soc,
+        target_soc=target_soc,
+        battery_kwh=battery_kwh,
+        charger_kw=charger_kw,
+        efficiency=efficiency_percent / 100,
+        start_hour=planning_start_hour,
+        departure_hour=departure_hour,
+        retail_price=retail_price,
+        base_point_rate=base_point_rate,
+        bonus_point_rate=bonus_point_rate,
+        partial_reward_threshold=partial_reward_threshold,
+        full_reward_threshold=full_reward_threshold,
+        session_point_cap=session_point_cap,
+        continuous=continuous,
+        conservative=conservative,
     )
-except ValueError as err:
-    st.markdown(f'<div class="warning-box">{err}</div>', unsafe_allow_html=True)
+except ValueError as error:
+    st.error(str(error))
     st.stop()
 
 used = plan["ai_schedule"][plan["ai_schedule"]["scheduled_kwh"] > 1e-6].sort_values("timestamp")
@@ -429,131 +279,307 @@ score_col = plan.get("score_column") or "green_score"
 plot_df = forecast.sort_values("timestamp")
 if score_col not in plot_df.columns:
     score_col = "green_score" if "green_score" in plot_df.columns else plot_df.columns[-1]
-    
-reward_schedule = used.rename(columns={score_col: "score"}).copy()
-
-green_point_result = calculate_green_point(
-    reward_schedule,
-    base_rate=100.0,
-)
 
 if used.empty:
-    st.markdown(
-        '<div class="warning-box">이 일정으로는 추천 구간을 만들기 어려워요.</div>',
-        unsafe_allow_html=True,
+    recommended_times = "없음"
+else:
+    first_time = used["timestamp"].min()
+    last_time = used["timestamp"].max() + pd.Timedelta(hours=1)
+    recommended_times = f"{first_time:%H:%M}~{last_time:%H:%M}"
+
+display_points = (
+    plan["ai"]["settled_total_points"]
+    if has_actual
+    else plan["ai"]["expected_total_points"]
+)
+point_label = "재현 정산 충전 크레딧" if has_actual else "예상 충전 크레딧"
+
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("필요한 전력", f"{plan['required_grid_kwh']:.1f} kWh")
+col2.metric("추천 충전시간", recommended_times)
+col3.metric(point_label, f"{display_points:,.0f}P")
+col4.metric("예상 도달 배터리", f"{plan['reached_soc']:.1f}%")
+
+point1, point2, point3 = st.columns(3)
+point1.metric("예보가 틀려도 참여 보장", f"{plan['ai']['guaranteed_points']:,.0f}P")
+point2.metric("예측 당시 기대 보너스", f"{plan['ai']['expected_bonus_points']:,.0f}P")
+if has_actual:
+    point3.metric("실제값 확인 후 보너스", f"{plan['ai']['settled_bonus_points']:,.0f}P")
+else:
+    point3.metric("실제값 확인 후 보너스", "충전 후 정산")
+
+st.subheader("24시간 예측과 보수적인 추천")
+chart_data = forecast.merge(
+    plan["ai_schedule"][["timestamp", "scheduled_kwh"]],
+    on="timestamp",
+    how="left",
+).fillna({"scheduled_kwh": 0})
+score_to_show = "planning_score" if plan["conservative"] else "green_score"
+fig = go.Figure()
+fig.add_bar(
+    x=chart_data["timestamp"],
+    y=chart_data[score_to_show],
+    name="추천에 사용한 점수",
+    marker_color=["#20a464" if value > 0 else "#d9e2dc" for value in chart_data["scheduled_kwh"]],
+)
+if plan["conservative"]:
+    fig.add_scatter(
+        x=chart_data["timestamp"],
+        y=chart_data["green_score"],
+        name="중심 예측 Green Score",
+        line={"color": "#277da1", "width": 2, "dash": "dot"},
+    )
+fig.update_layout(
+    height=430,
+    xaxis_title="시간",
+    yaxis={"title": "기회점수", "range": [0, 105]},
+    legend={"orientation": "h", "y": 1.14},
+    margin={"t": 35, "b": 30},
+)
+st.plotly_chart(fig, use_container_width=True)
+st.caption(
+    "추천점수는 예측 재생에너지를 예측 제주 전력수요로 나눈 공급여력의 과거 백분위입니다."
+)
+
+if not used.empty:
+    best_slot = used.sort_values([score_to_show, "timestamp"], ascending=[False, True]).iloc[0]
+    candidates = forecast[
+        (forecast["timestamp"].dt.hour >= planning_start_hour)
+        & (forecast["timestamp"].dt.hour < departure_hour)
+    ]
+    score_difference = best_slot[score_to_show] - candidates[score_to_show].mean()
+    st.success(
+        f"추천 이유: {best_slot['timestamp']:%H시}의 보수적 기회점수가 사용 가능시간 평균보다 "
+        f"{score_difference:+.1f}점 높습니다. 재생에너지는 {best_slot['predicted_renewable_mwh']:.1f}MWh, "
+        f"제주 전력수요는 {best_slot['predicted_demand_mwh']:.1f}MWh로 예상됩니다."
+    )
+
+if has_actual:
+    st.subheader("AI 예측과 실제값 비교")
+    renewable_tab, demand_tab = st.tabs(["재생에너지", "제주 전력수요"])
+    with renewable_tab:
+        renewable_fig = go.Figure()
+        renewable_fig.add_scatter(
+            x=forecast["timestamp"], y=forecast["predicted_renewable_lower"],
+            line={"width": 0}, name="예상 하한", showlegend=False,
+        )
+        renewable_fig.add_scatter(
+            x=forecast["timestamp"], y=forecast["predicted_renewable_upper"],
+            line={"width": 0}, fill="tonexty", fillcolor="rgba(32,164,100,0.18)",
+            name="약 90% 예상 범위",
+        )
+        renewable_fig.add_scatter(
+            x=forecast["timestamp"], y=forecast["predicted_renewable_mwh"],
+            name="AI 예측", line={"color": "#20a464", "width": 3},
+        )
+        renewable_fig.add_scatter(
+            x=forecast["timestamp"], y=forecast["actual_renewable_mwh"],
+            name="실제값", line={"color": "#243447", "width": 2, "dash": "dot"},
+        )
+        renewable_fig.update_layout(height=350, yaxis_title="MWh", margin={"t": 20, "b": 30})
+        st.plotly_chart(renewable_fig, use_container_width=True)
+
+    with demand_tab:
+        demand_fig = go.Figure()
+        demand_fig.add_scatter(
+            x=forecast["timestamp"], y=forecast["predicted_demand_lower"],
+            line={"width": 0}, name="예상 하한", showlegend=False,
+        )
+        demand_fig.add_scatter(
+            x=forecast["timestamp"], y=forecast["predicted_demand_upper"],
+            line={"width": 0}, fill="tonexty", fillcolor="rgba(39,125,161,0.18)",
+            name="약 90% 예상 범위",
+        )
+        demand_fig.add_scatter(
+            x=forecast["timestamp"], y=forecast["predicted_demand_mwh"],
+            name="AI 예측", line={"color": "#277da1", "width": 3},
+        )
+        demand_fig.add_scatter(
+            x=forecast["timestamp"], y=forecast["actual_demand_mwh"],
+            name="실제값", line={"color": "#243447", "width": 2, "dash": "dot"},
+        )
+        demand_fig.update_layout(height=350, yaxis_title="MWh", margin={"t": 20, "b": 30})
+        st.plotly_chart(demand_fig, use_container_width=True)
+elif has_observed:
+    st.subheader("실측 도착 전후 예측 보정")
+    with st.container():
+        renewable_fig = go.Figure()
+        renewable_fig.add_scatter(
+            x=forecast["timestamp"], y=forecast["raw_predicted_renewable_mwh"],
+            name="보정 전 예측", line={"color": "#aab4bd", "width": 2, "dash": "dot"},
+        )
+        renewable_fig.add_scatter(
+            x=forecast["timestamp"], y=forecast["predicted_renewable_mwh"],
+            name="실측 반영 후 예측", line={"color": "#20a464", "width": 3},
+        )
+        renewable_fig.add_scatter(
+            x=forecast["timestamp"], y=forecast["observed_actual_renewable_mwh"],
+            name="현재까지 도착한 실측", mode="lines+markers",
+            line={"color": "#243447", "width": 2},
+        )
+        renewable_fig.update_layout(height=350, yaxis_title="MWh", margin={"t": 20, "b": 30})
+        st.plotly_chart(renewable_fig, use_container_width=True)
+    st.caption(
+        "완료된 최근 3시간의 실제-예측 오차를 사용합니다. 다음 한 시간은 크게 고치고, "
+        "먼 시간일수록 보정 영향이 줄어듭니다. 미래 실제값은 계산에 사용하지 않습니다."
     )
 else:
-    start_ts = used["timestamp"].iloc[0]
-    avg_score = float(
-        (used["scheduled_kwh"] * used[score_col]).sum() / used["scheduled_kwh"].sum()
+    st.subheader("내일 날씨예보 입력")
+    weather_table = forecast[[
+        "timestamp", "temperature_2m", "relative_humidity_2m",
+        "wind_speed_10m", "shortwave_radiation",
+    ]].copy()
+    weather_table.columns = ["시간", "기온(°C)", "습도(%)", "풍속(km/h)", "일사량(W/m²)"]
+    st.dataframe(weather_table, hide_index=True, use_container_width=True)
+    st.caption("Open-Meteo의 제주시 기준 내일 시간별 예보를 30분 동안 저장해 사용합니다.")
+
+st.subheader("추천과 즉시 충전 비교")
+compare1, compare2 = st.columns(2)
+compare1.metric(
+    "보수적 기회점수",
+    f"{plan['ai']['weighted_planning_score']:.1f}점",
+    f"{plan['ai']['weighted_planning_score'] - plan['baseline']['weighted_planning_score']:+.1f}점",
+)
+simulated_cost = (
+    plan["ai"]["simulated_settled_cost_won"]
+    if has_actual
+    else plan["ai"]["simulated_expected_cost_won"]
+)
+compare2.metric(
+    "1P=1원 가정 체감비용",
+    f"{simulated_cost:,.0f}원",
+    f"-{display_points:,.0f}P",
+)
+st.caption(
+    "체감비용은 포인트를 1P=1원으로 가정한 시뮬레이션입니다. 실제 제휴 전에는 충전요금 절감을 보장하지 않습니다."
+)
+
+st.subheader("추천 시간별 계산")
+table = plan["ai_schedule"].copy()
+table["시간"] = table["timestamp"].dt.strftime("%H:%M")
+table["예측 재생에너지"] = table["predicted_renewable_mwh"].round(1)
+table["예측 제주 전력수요"] = table["predicted_demand_mwh"].round(1)
+table["중심 점수"] = table["green_score"].round(1)
+table["보수적 점수"] = table.get("planning_score", table["green_score"]).round(1)
+table["충전량(kWh)"] = table["scheduled_kwh"].round(2)
+table["보장 P"] = (table["scheduled_kwh"] * base_point_rate).round(0)
+table["예상 보너스 단가"] = table["green_score"].apply(
+    lambda score: bonus_rate_for_score(
+        score,
+        bonus_point_rate,
+        partial_reward_threshold,
+        full_reward_threshold,
     )
-    hours = sorted(used["timestamp"].dt.hour.unique().tolist())
-    time_label = (
-        f"{hours[0]}시" if len(hours) == 1 else f"{hours[0]}시 – {hours[-1] + 1}시"
+)
+table["예상 보너스 P"] = (
+    table["scheduled_kwh"] * table["예상 보너스 단가"]
+).round(0)
+columns = [
+    "시간", "예측 재생에너지", "예측 제주 전력수요", "중심 점수", "보수적 점수",
+    "충전량(kWh)", "보장 P", "예상 보너스 단가", "예상 보너스 P",
+]
+if has_actual:
+    table["실제 점수"] = table["actual_green_score"].round(1)
+    table["정산 보너스 단가"] = table["actual_green_score"].apply(
+        lambda score: bonus_rate_for_score(
+            score,
+            bonus_point_rate,
+            partial_reward_threshold,
+            full_reward_threshold,
+        )
     )
+    table["정산 보너스 P"] = (
+        table["scheduled_kwh"] * table["정산 보너스 단가"]
+    ).round(0)
+    columns.extend(["실제 점수", "정산 보너스 단가", "정산 보너스 P"])
+st.dataframe(table[columns], hide_index=True, use_container_width=True)
+st.caption(f"총 지급 포인트는 한 번 충전당 최대 {session_point_cap:,.0f}P로 제한합니다.")
+
+with st.expander("Green 충전 크레딧은 어떻게 정했나요?"):
     st.markdown(
         f"""
-<div class="rec-card">
-  <div class="label">추천 충전 시간</div>
-  <div class="time">{time_label}</div>
-  <div class="sub">{start_ts:%m월 %d일} · {weather_note}</div>
-  <div class="chips">
-    <span class="chip">도착 약 {plan['reached_soc']:.0f}%</span>
-    <span class="chip">{plan['required_grid_kwh']:.0f} kWh</span>
-    <span class="chip">친환경 {avg_score:.0f}점</span>
-    <span class="chip">예상 {green_point_result['expected_points']:,}P</span>
-  </div>
-</div>
-""",
-        unsafe_allow_html=True,
+현재 크레딧은 **충전사업자·지자체·후원기업 중 한 곳이
+월 {monthly_budget_won:,.0f}원의 캠페인 예산을 제공한다고 가정한
+시뮬레이션**입니다.
+
+- 최대 단가 근거:
+  {monthly_budget_won:,.0f}원 ÷ {target_shifted_kwh:,.0f}kWh
+  = {point_policy['maximum_total_rate']:,.1f}P/kWh
+- 참여 보장:
+  추천시간과 겹친 충전량 × {base_point_rate:,.1f}P/kWh
+- 50점 미만:
+  성과 보너스 0P/kWh
+- 50~69점:
+  성과 보너스 {partial_bonus_rate:,.1f}P/kWh
+- 70점 이상:
+  성과 보너스 {bonus_point_rate:,.1f}P/kWh
+- 세션 상한:
+  {session_point_cap:,.0f}P
+
+1P는 다음 충전에서 1원처럼 사용하는 충전 크레딧으로 정의합니다.
+
+실제 서비스에는 충전 세션 ID, 실제 충전량, 결제기록,
+중복지급 방지 원장과 예산 제공자 계약이 필요합니다.
+"""
     )
 
-k1, k2, k3, k4, k5 = st.columns(5)
-k1.metric("시작(적용)", f"{effective_start}시")
-k2.metric("출발", f"{departure_hour}시")
-k3.metric("충전기", f"{charger_kw:g} kW")
-k4.metric("최고 점수", f"{float(plot_df[score_col].max()):.0f}")
-k5.metric("예상 Green Point", f"{green_point_result['expected_points']:,}P")
+
+with st.expander("AI 성능을 어떻게 검증했나요?"):
+    st.write(
+        "앞선 4개 시간 구간으로 모델을 선택하고, "
+        "마지막 30일은 선택에 쓰지 않고 최종 확인했습니다."
+    )
+
+    for target, label in [
+        ("renewable_mwh", "재생에너지"),
+        ("demand_mwh", "제주 전력수요"),
+    ]:
+        values = metrics["forecast_only_targets"][target]
+        baseline_mae = values["baseline_month_hour"]["mae"]
+
+        st.write(
+            f"**{label} 내일 예보형 모델** — "
+            f"최종 30일 MAE {values['ai']['mae']}, "
+            f"월·시간 기준 MAE {baseline_mae}, "
+            f"개선율 {values['mae_improvement_percent']}%"
+        )
+
+    st.write(
+        "실제 과거 기상예보 원본이 아닌 관측날씨로 재현했으므로, "
+        "실제 기상예보 오차는 별도 한계입니다."
+    )
+
+
+with st.expander("현재 구현한 것과 아직 구현하지 않은 것"):
+    st.markdown(
+        """
+**구현**
+
+- 2023~2025년 25,559시간 병합
+- 후보 모델 시간순 비교
+- 오늘·내일 날씨예보 조회
+- 재생에너지·전력수요 예측
+- KPX 제주 5분 태양광·풍력·수요·공급 실측 연결
+- 도착한 재생에너지 실측 기반 남은 예측 및 충전시간 재계산
+- API 장애용 과거 재현
+- 보수적 연속 충전시간 추천
+- Green Point 정책
+- 목표 SOC 불가능 경고
+- 자동검사
+
+**미구현**
+
+- 충전사업자 결제 연동
+- 실제 포인트 지급
+- 실제 충전기 제어
+- HVDC·발전기 정비·출력제어 예고
+- 공식 탄소감축·REC 인증
+"""
+    )
+
 
 st.caption(
-    f"리워드 대상 {green_point_result['eligible_kwh']:.1f} kWh · "
-    f"가중 평균 Green Score {green_point_result['weighted_score']:.1f}점 · "
-    "100P/kWh 기준 MVP 예시 정책"
-)
-
-if green_point_result["expected_points"] == 0:
-    st.info(
-        "현재 추천 구간에는 Green Score 70점 이상 시간이 없어 "
-        "Green Point 대상 충전량이 없습니다. "
-        "목표 배터리 달성을 우선해 충전 일정을 추천했습니다."
-    )
-
-st.markdown('<p class="section-title">📊 Green 점수 · 추천 구간</p>', unsafe_allow_html=True)
-st.plotly_chart(
-    chart_green_score(plot_df, used, score_col),
-    use_container_width=True,
-    config={"displayModeBar": False},
-)
-st.caption("진한 초록 = 추천 충전 시간 · 점선 = 70점 참고선")
-
-st.markdown('<p class="section-title">☀️ 예측 재생에너지 · 일사량</p>', unsafe_allow_html=True)
-st.plotly_chart(
-    chart_renewable_weather(plot_df, used),
-    use_container_width=True,
-    config={"displayModeBar": False},
-)
-st.caption("초록 밴드 = 예측 구간 · 배경 음영 = 추천 충전 시간")
-
-d1, d2 = st.columns(2)
-with d1:
-    st.markdown('<p class="section-title">🔋 예상 배터리</p>', unsafe_allow_html=True)
-    st.plotly_chart(
-        chart_soc_progress(current_soc, target_soc, plan["reached_soc"]),
-        use_container_width=True,
-        config={"displayModeBar": False},
-    )
-with d2:
-    st.markdown('<p class="section-title">⚡ 시간별 충전량</p>', unsafe_allow_html=True)
-    if not used.empty:
-        st.plotly_chart(
-            chart_charge_schedule(used),
-            use_container_width=True,
-            config={"displayModeBar": False},
-        )
-    else:
-        st.info("추천 구간이 없습니다.")
-
-if st.button("지금 새로고침", use_container_width=True):
-    load_weather.clear()
-    st.rerun()
-
-with st.expander("표로 보기"):
-    if not used.empty:
-        show = used.copy()
-        show["시각"] = show["timestamp"].dt.strftime("%H:%M")
-        cols = ["시각", "scheduled_kwh", score_col]
-        if "predicted_renewable_mwh" in show.columns:
-            cols.append("predicted_renewable_mwh")
-        st.dataframe(
-            show[cols].rename(
-                columns={
-                    "scheduled_kwh": "충전 kWh",
-                    score_col: "점수",
-                    "predicted_renewable_mwh": "예측 재생 MWh",
-                }
-            ),
-            hide_index=True,
-            use_container_width=True,
-        )
-    view = plot_df.copy()
-    view["시각"] = view["timestamp"].dt.strftime("%H:%M")
-    show_cols = ["시각", score_col]
-    for c in ("predicted_renewable_mwh", "shortwave_radiation", "temperature_2m"):
-        if c in view.columns:
-            show_cols.append(c)
-    st.dataframe(view[show_cols], hide_index=True, use_container_width=True)
-
-st.markdown(
-    '<p class="footer-note">JEJU Green Time · 추천은 참고용입니다</p>',
-    unsafe_allow_html=True,
+    "주의: 본 MVP는 충전 의사결정과 Green Point 정책 시뮬레이션입니다. "
+    "실제 충전요금 절감, 포인트 지급, 탄소감축량, REC 인증 또는 "
+    "충전기 제어를 보장하지 않습니다."
 )

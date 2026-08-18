@@ -1,8 +1,7 @@
 {
   "version": "v3_hpo",
-  "note": "Synthetic-data HPO reference; re-run on real train.csv without SMP target",
+  "note": "Synthetic-data HPO reference; re-run on real train.csv",
   "targets": ["re_mwh", "demand_mwh"],
-  "smp_used": false,
   "re_best_params": {
     "n_estimators": 300,
     "learning_rate": 0.05,

@@ -69,30 +69,30 @@ class WeatherEnsembleTests(unittest.TestCase):
         forecast = pd.DataFrame(
             {
                 "timestamp": timestamps,
-                "predicted_smp": [20.0] * 24,
-                "predicted_smp_lower": [15.0] * 24,
-                "predicted_smp_upper": [25.0] * 24,
                 "predicted_renewable_mwh": [10.0] * 24,
                 "predicted_renewable_lower": [7.0] * 24,
                 "predicted_renewable_upper": [13.0] * 24,
+                "predicted_demand_mwh": [20.0] * 24,
+                "predicted_demand_lower": [15.0] * 24,
+                "predicted_demand_upper": [25.0] * 24,
                 "green_score": [60.0] * 24,
             }
         )
         history = pd.DataFrame(
             {
-                "smp": np.linspace(0, 100, 200),
                 "renewable_mwh": np.linspace(0, 100, 200),
+                "demand_mwh": np.linspace(100, 200, 200),
             }
         )
         result, metadata = apply_ensemble_uncertainty(
             forecast,
-            {"smp": WindModel(), "renewable_mwh": RadiationModel()},
+            {"demand_mwh": WindModel(), "renewable_mwh": RadiationModel()},
             history,
             weather,
         )
         self.assertEqual(metadata["member_count"], 6)
-        self.assertTrue((result["predicted_smp_upper"] >= 25).all())
         self.assertTrue((result["predicted_renewable_upper"] >= 13).all())
+        self.assertTrue((result["predicted_demand_upper"] >= 25).all())
         self.assertIn("planning_score", result.columns)
 
 

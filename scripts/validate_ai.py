@@ -18,10 +18,7 @@ HISTORY_PATH = ROOT / "data" / "processed" / "train.csv"
 
 
 def validate_green_score(green_score: float) -> bool:
-    """
-    MVP 기준: 재생(MWh) / max(수요(MWh), 50) 기반 공급여력 점수 검증.
-    기획서 기준 Green Time 후보는 70점 이상.
-    """
+    """재생에너지/수요 비율의 백분위 점수가 Green Time 기준을 충족하는지 확인한다."""
     return green_score >= 70.0
 
 
@@ -31,18 +28,17 @@ def validate() -> None:
 
     forecast = pd.read_csv(PREDICTION_PATH, parse_dates=["timestamp"])
     required_columns = {
-        "predicted_smp",
-        "predicted_smp_lower",
-        "predicted_smp_upper",
         "predicted_renewable_mwh",
         "predicted_renewable_lower",
         "predicted_renewable_upper",
+        "predicted_demand_mwh",
+        "predicted_demand_lower",
+        "predicted_demand_upper",
         "green_score",
         "planning_score",
         "forecast_risk_points",
         "actual_green_score",
     }
-
     missing = required_columns - set(forecast.columns)
     if missing:
         raise ValueError(f"예측 파일에 필요한 열이 없습니다: {sorted(missing)}")
@@ -58,15 +54,15 @@ def validate() -> None:
         raise ValueError("보수적 점수가 중심 예측 점수보다 높은 시간이 있습니다.")
 
     metrics = json.loads(METRICS_PATH.read_text(encoding="utf-8"))
-
-    for target in ("smp", "renewable_mwh"):
+    for target in ("renewable_mwh", "demand_mwh"):
         if target not in metrics["targets"]:
             raise ValueError(f"{target} 평가 결과가 없습니다.")
         if target not in metrics.get("forecast_only_targets", {}):
             raise ValueError(f"{target} 내일 예보용 모델 평가 결과가 없습니다.")
-
+    if "예측 재생에너지/예측 수요" not in metrics.get("score_definition", ""):
+        raise ValueError("Green Score는 재생에너지/전력수요 공급여력 기준이어야 합니다.")
     if not forecast["green_score"].apply(validate_green_score).any():
-        raise ValueError("공급여력 기준 Green Score 70점 이상인 시간이 없습니다.")
+        raise ValueError("수요 대비 재생에너지 기준 Green Score 70점 이상인 시간이 없습니다.")
 
     point_policy = derive_point_policy(3_000_000, 100_000)
     if point_policy["maximum_total_rate"] != 30:
@@ -90,7 +86,6 @@ def validate() -> None:
         continuous=True,
         conservative=True,
     )
-
     if not plan["feasible"] or abs(plan["reached_soc"] - 80) > 1e-6:
         raise ValueError("기본 시나리오가 목표 배터리 80%를 달성하지 못했습니다.")
     if not plan["conservative"]:
@@ -104,15 +99,17 @@ def validate() -> None:
 
     history = pd.read_csv(HISTORY_PATH, parse_dates=["timestamp"])
     replay_as_of = forecast["timestamp"].dt.normalize().iloc[0] + pd.Timedelta(hours=10)
-
     adjusted, adjustment_metadata = adjust_forecast_with_observations(
         forecast,
         history,
         as_of=replay_as_of,
     )
-
     future = adjusted[adjusted["timestamp"] > replay_as_of]
-    if future[["actual_smp", "actual_renewable_mwh"]].notna().any().any():
+    actual_columns = [
+        column for column in ("actual_renewable_mwh", "actual_demand_mwh")
+        if column in future.columns
+    ]
+    if future[actual_columns].notna().any().any():
         raise ValueError("실시간 보정 재현에서 미래 실제값이 노출되었습니다.")
     if "actual_green_score" in adjusted.columns:
         raise ValueError("실시간 보정 재현이 미래 실제 점수로 정산할 위험이 있습니다.")
@@ -128,17 +125,15 @@ def validate() -> None:
     print(f"참여 보장 포인트: {plan['ai']['guaranteed_points']:,.0f}P")
     print(f"성과형 보너스: {plan['ai']['settled_bonus_points']:,.0f}P")
     print(f"재현 정산 포인트: {plan['ai']['settled_total_points']:,.0f}P")
-
     print(
         "실시간 보정 재현: "
         f"{adjustment_metadata['observed_hours']}시간 실측 사용, 미래 실제값 차단"
     )
-
-    for target in ("smp", "renewable_mwh"):
-        values = metrics["targets"][target]
+    for target in ("renewable_mwh", "demand_mwh"):
+        values = metrics["forecast_only_targets"][target]
         print(
-            f"{target}: AI MAE {values['ai']['mae']}, "
-            f"공정한 개선율 {values['mae_improvement_percent']}%"
+            f"{target}: 내일 예보형 MAE {values['ai']['mae']}, "
+            f"마지막 30일 개선율 {values['mae_improvement_percent']}%"
         )
 
 

@@ -98,7 +98,6 @@ def _summarize(
             "simulated_minimum_cost_won": 0.0,
             "simulated_expected_cost_won": 0.0,
             "simulated_settled_cost_won": 0.0,
-            "market_cost_proxy_won": 0.0,
             "weighted_renewable_mwh": 0.0,
             "weighted_green_score": 0.0,
             "weighted_planning_score": 0.0,
@@ -155,9 +154,6 @@ def _summarize(
         "simulated_minimum_cost_won": gross_cost - guaranteed_points,
         "simulated_expected_cost_won": gross_cost - expected_total_points,
         "simulated_settled_cost_won": gross_cost - settled_total_points,
-        "market_cost_proxy_won": float(
-            (used["scheduled_kwh"] * used["predicted_smp"]).sum()
-        ),
         "weighted_renewable_mwh": float(
             (used["scheduled_kwh"] * used["predicted_renewable_mwh"]).sum() / energy
         ),
@@ -176,7 +172,6 @@ def _best_continuous_schedule(
     required_grid_kwh: float,
     charger_kw: float,
     score_column: str,
-    price_column: str,
 ) -> tuple[pd.DataFrame, float]:
     """여러 번 꽂았다 빼지 않도록 가장 좋은 연속 충전구간을 찾는다."""
     ordered = available.sort_values("timestamp").reset_index(drop=True)
@@ -190,8 +185,8 @@ def _best_continuous_schedule(
         schedule, remaining = _allocate(candidate, required_grid_kwh, charger_kw)
         used = schedule[schedule["scheduled_kwh"] > 0]
         score_value = float((used["scheduled_kwh"] * used[score_column]).sum())
-        price_value = float((used["scheduled_kwh"] * used[price_column]).sum())
-        key = (score_value, -price_value)
+        # 점수가 같으면 더 이른 연속 구간을 유지한다. 시장가격은 추천에 쓰지 않는다.
+        key = score_value
         if best_key is None or key > best_key:
             best_schedule = schedule
             best_remaining = remaining
@@ -222,8 +217,8 @@ def make_plan(
 ) -> dict:
     """목표 SOC를 지키면서 가장 좋은 충전 계획을 만든다.
 
-    conservative=True이면 예측 중심값이 아니라 가격 상한·재생에너지 하한으로
-    계산한 planning_score를 사용한다. 예보가 빗나갈 때의 위험을 줄이기 위함이다.
+    conservative=True이면 재생에너지 하한과 수요 상한으로 계산한
+    planning_score를 사용한다. 예보가 빗나갈 때의 위험을 줄이기 위함이다.
     """
     if target_soc <= current_soc:
         raise ValueError("목표 배터리는 현재 배터리보다 높아야 합니다.")
@@ -249,12 +244,6 @@ def make_plan(
 
     use_conservative = conservative and "planning_score" in available.columns
     score_column = "planning_score" if use_conservative else "green_score"
-    price_column = (
-        "predicted_smp_upper"
-        if use_conservative and "predicted_smp_upper" in available.columns
-        else "predicted_smp"
-    )
-
     battery_energy_needed = battery_kwh * (target_soc - current_soc) / 100
     required_grid_kwh = battery_energy_needed / efficiency
     max_grid_kwh = len(available) * charger_kw
@@ -267,11 +256,10 @@ def make_plan(
             energy_to_schedule,
             charger_kw,
             score_column,
-            price_column,
         )
     else:
         ai_order = available.sort_values(
-            [score_column, price_column], ascending=[False, True]
+            [score_column, "timestamp"], ascending=[False, True]
         )
         ai_schedule, remaining = _allocate(ai_order, energy_to_schedule, charger_kw)
     ai_schedule = ai_schedule.sort_values("timestamp")

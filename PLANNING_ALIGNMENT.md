@@ -1,13 +1,10 @@
 # 기획서 대조 (Green Time JEJU)
 
-기준 문서: [프로젝트 기획서](https://docs.google.com/document/d/1Tik5HTZQu5YIWoi4o3886RAq5pQx2UUPnpBcGlkB3F4/edit)
-
 ## 핵심 결정 (기획서 = 구현 기준)
 
 | 항목 | 기획서 | 구현 방향 |
 |------|--------|----------|
 | 예측 대상 | 재생(태양광+풍력) + **전력수요** | RE + Demand |
-| **SMP** | 공급여력 정의에 **없음** | **사용하지 않음** |
 | Green Score | 공급여력의 과거 계절 대비 백분위 0~100 | RE/Demand 백분위 |
 | Green Time | 상위 공급여력 / 70점+ 후보, 85+ 우선 | 동일 |
 | 보수적 점수 | RE 하한, 수요 상한 | asymmetric interval |
@@ -36,4 +33,3 @@
 ## 모델 방침
 
 기획서: 트리 기반, HistGBR·XGBoost·LightGBM MAE 비교 후 결정.  
-SMP residual / ExtraTrees SMP 경로는 제품 정의에서 제외한다.

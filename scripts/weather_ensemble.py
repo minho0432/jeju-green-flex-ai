@@ -17,13 +17,7 @@ from urllib.request import urlopen
 import numpy as np
 import pandas as pd
 
-from model_utils import (
-    MARKET_WEIGHT,
-    RENEWABLE_WEIGHT,
-    WEATHER_COLUMNS,
-    make_live_features,
-    score_against_history,
-)
+from model_utils import WEATHER_COLUMNS, attach_supply_margin_scores, make_live_features
 
 
 ENSEMBLE_URL = "https://ensemble-api.open-meteo.com/v1/ensemble"
@@ -157,18 +151,17 @@ def apply_ensemble_uncertainty(
                 {
                     "timestamp": member_weather["timestamp"],
                     "ensemble_member": member,
-                    "smp": models["smp"].predict(features),
                     "renewable_mwh": np.maximum(
                         models["renewable_mwh"].predict(features), 0
+                    ),
+                    "demand_mwh": np.maximum(
+                        models["demand_mwh"].predict(features), 0
                     ),
                 }
             )
         )
     predicted = pd.concat(predictions, ignore_index=True)
     summary = predicted.groupby("timestamp").agg(
-        ensemble_smp_p10=("smp", lambda values: values.quantile(0.10)),
-        ensemble_smp_p50=("smp", "median"),
-        ensemble_smp_p90=("smp", lambda values: values.quantile(0.90)),
         ensemble_renewable_p10=(
             "renewable_mwh",
             lambda values: values.quantile(0.10),
@@ -178,46 +171,37 @@ def apply_ensemble_uncertainty(
             "renewable_mwh",
             lambda values: values.quantile(0.90),
         ),
+        ensemble_demand_p10=("demand_mwh", lambda values: values.quantile(0.10)),
+        ensemble_demand_p50=("demand_mwh", "median"),
+        ensemble_demand_p90=("demand_mwh", lambda values: values.quantile(0.90)),
         ensemble_member_count=("ensemble_member", "nunique"),
     ).reset_index()
     result = result.merge(summary, on="timestamp", how="left", validate="one_to_one")
     if result["ensemble_member_count"].isna().any():
         raise WeatherEnsembleError("기본 예보와 앙상블 예보의 시간이 맞지 않습니다.")
 
-    smp_downside = (
-        result["predicted_smp"] - result["ensemble_smp_p10"]
-    ).clip(lower=0)
-    smp_upside = (
-        result["ensemble_smp_p90"] - result["predicted_smp"]
-    ).clip(lower=0)
     renewable_downside = (
         result["predicted_renewable_mwh"] - result["ensemble_renewable_p10"]
     ).clip(lower=0)
     renewable_upside = (
         result["ensemble_renewable_p90"] - result["predicted_renewable_mwh"]
     ).clip(lower=0)
-    result["predicted_smp_lower"] -= smp_downside
-    result["predicted_smp_upper"] += smp_upside
     result["predicted_renewable_lower"] = np.maximum(
         result["predicted_renewable_lower"] - renewable_downside, 0
     )
     result["predicted_renewable_upper"] += renewable_upside
+    demand_downside = (
+        result["predicted_demand_mwh"] - result["ensemble_demand_p10"]
+    ).clip(lower=0)
+    demand_upside = (
+        result["ensemble_demand_p90"] - result["predicted_demand_mwh"]
+    ).clip(lower=0)
+    result["predicted_demand_lower"] = np.maximum(
+        result["predicted_demand_lower"] - demand_downside, 0
+    )
+    result["predicted_demand_upper"] += demand_upside
 
-    result["conservative_price_score"] = score_against_history(
-        result["predicted_smp_upper"], history["smp"], higher_is_better=False
-    ).round(1)
-    result["conservative_renewable_score"] = score_against_history(
-        result["predicted_renewable_lower"],
-        history["renewable_mwh"],
-        higher_is_better=True,
-    ).round(1)
-    result["planning_score"] = (
-        MARKET_WEIGHT * result["conservative_price_score"]
-        + RENEWABLE_WEIGHT * result["conservative_renewable_score"]
-    ).round(1)
-    result["forecast_risk_points"] = (
-        result["green_score"] - result["planning_score"]
-    ).clip(lower=0).round(1)
+    result = attach_supply_margin_scores(result, history)
     renewable_ranges = (
         result["ensemble_renewable_p90"] - result["ensemble_renewable_p10"]
     )

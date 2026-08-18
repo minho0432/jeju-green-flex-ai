@@ -13,17 +13,12 @@ WEATHER_COLUMNS = [
     "shortwave_radiation",
 ]
 
-# Green Score: 공급여력(재생/수요) 100%. SMP 미사용.
-RENEWABLE_WEIGHT = 1.00
-MARKET_WEIGHT = 0.00
+# Green Score: 공급여력(재생/수요) 100%.
 DEFAULT_RENEWABLE_AI_ALPHA = 1.0
 DEFAULT_DEMAND_AI_ALPHA = 1.0
 DEMAND_FLOOR_MWH = 50.0
 
 LAG_COLUMNS = [
-    "smp_lag_24h",
-    "smp_lag_48h",
-    "smp_lag_168h",
     "renewable_lag_24h",
     "renewable_lag_48h",
     "renewable_lag_168h",
@@ -97,18 +92,17 @@ def supply_margin(
 
 def add_lag_features(df: pd.DataFrame) -> pd.DataFrame:
     result = df.sort_values("timestamp").copy()
-    if "smp" in result.columns:
-        result["smp_lag_24h"] = result["smp"].shift(24)
-        result["smp_lag_48h"] = result["smp"].shift(48)
-        result["smp_lag_168h"] = result["smp"].shift(168)
-    if "renewable_mwh" in result.columns:
-        result["renewable_lag_24h"] = result["renewable_mwh"].shift(24)
-        result["renewable_lag_48h"] = result["renewable_mwh"].shift(48)
-        result["renewable_lag_168h"] = result["renewable_mwh"].shift(168)
-    if "demand_mwh" in result.columns:
-        result["demand_lag_24h"] = result["demand_mwh"].shift(24)
-        result["demand_lag_48h"] = result["demand_mwh"].shift(48)
-        result["demand_lag_168h"] = result["demand_mwh"].shift(168)
+    timestamp = pd.to_datetime(result["timestamp"])
+    for source, prefix in (
+        ("renewable_mwh", "renewable"),
+        ("demand_mwh", "demand"),
+    ):
+        if source not in result.columns:
+            continue
+        for hours in (24, 48, 168):
+            shifted = result[source].shift(hours)
+            exact_lag = timestamp - timestamp.shift(hours) == pd.Timedelta(hours=hours)
+            result[f"{prefix}_lag_{hours}h"] = shifted.where(exact_lag)
     return result
 
 
@@ -224,13 +218,6 @@ def attach_supply_margin_scores(
     out["renewable_opportunity_score"] = score_against_history(
         out[renewable_col], hist["renewable_mwh"], higher_is_better=True
     ).round(1)
-    if "predicted_smp" in out.columns and "smp" in hist.columns:
-        out["price_opportunity_score"] = score_against_history(
-            out["predicted_smp"], hist["smp"], higher_is_better=False
-        ).round(1)
-    else:
-        out["price_opportunity_score"] = 50.0
-
     out["green_score"] = out["supply_margin_score"]
 
     if renewable_lower_col in out.columns and demand_upper_col in out.columns:
