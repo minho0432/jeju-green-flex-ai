@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from jeju_grid_live import (  # noqa: E402
     JejuGridApiError,
     JejuGridNoDataError,
+    build_legacy_request_url,
     build_request_url,
     fetch_jeju_grid_live,
     grid_samples_to_hourly,
@@ -103,6 +104,21 @@ class JejuGridLiveTests(unittest.TestCase):
         self.assertIn("30", str(context.exception))
         self.assertIn("SERVICE KEY IS NOT REGISTERED", str(context.exception))
 
+    def test_successful_legacy_xml_response_is_parsed(self):
+        payload = """<?xml version="1.0" encoding="UTF-8"?>
+        <response><header><resultCode>00</resultCode><resultMsg>NORMAL SERVICE</resultMsg></header>
+        <body><items><item>
+        <baseDatetime>202608111000</baseDatetime><suppAbility>1813</suppAbility>
+        <currPwrTot>900</currPwrTot><renewPwrTot>180</renewPwrTot>
+        <renewPwrSolar>60</renewPwrSolar><renewPwrWind>120</renewPwrWind>
+        <currNtPwrTot>883</currNtPwrTot>
+        </item></items><totalCount>1</totalCount></body></response>"""
+        frame = parse_api_response(payload)
+        self.assertEqual(len(frame), 1)
+        self.assertEqual(frame.iloc[0]["timestamp"].strftime("%Y-%m-%d %H:%M"), "2026-08-11 10:00")
+        self.assertEqual(frame.iloc[0]["solar_mw"], 60)
+        self.assertEqual(frame.iloc[0]["wind_mw"], 120)
+
     def test_expired_key_error_has_actionable_guidance(self):
         payload = {
             "response": {
@@ -143,7 +159,15 @@ class JejuGridLiveTests(unittest.TestCase):
         self.assertNotIn("baseDate=", url)
         self.assertIn("serviceKey=abc%2Bdef%3D", url)
 
-    def test_live_fetch_retries_with_today_after_undated_zero_rows(self):
+    def test_legacy_request_url_uses_xml_endpoint_without_date_or_json(self):
+        url = build_legacy_request_url("abc%2Bdef%3D")
+        self.assertIn("openapi.kpx.or.kr", url)
+        self.assertIn("serviceKey=abc%2Bdef%3D", url)
+        self.assertNotIn("%252B", url)
+        self.assertNotIn("baseDate=", url)
+        self.assertNotIn("dataType=", url)
+
+    def test_live_fetch_uses_legacy_xml_after_gw_zero_rows(self):
         empty_payload = json.dumps(
             {
                 "response": {
@@ -176,7 +200,41 @@ class JejuGridLiveTests(unittest.TestCase):
         first_url = mocked_urlopen.call_args_list[0].args[0].full_url
         second_url = mocked_urlopen.call_args_list[1].args[0].full_url
         self.assertNotIn("baseDate=", first_url)
-        self.assertIn("baseDate=", second_url)
+        self.assertIn("apis.data.go.kr", first_url)
+        self.assertIn("openapi.kpx.or.kr", second_url)
+        self.assertEqual(frame.attrs["api_source"], "구형 KPX XML")
+
+    def test_live_fetch_uses_legacy_after_gw_api_error(self):
+        denied_payload = json.dumps(
+            {
+                "response": {
+                    "header": {"resultCode": "20", "resultMsg": "SERVICE ACCESS DENIED"},
+                    "body": {},
+                }
+            }
+        ).encode()
+        success_payload = json.dumps(
+            {
+                "response": {
+                    "header": {"resultCode": "00"},
+                    "body": {"items": [sample_item(0)], "totalCount": 1},
+                }
+            }
+        ).encode()
+        denied_response = MagicMock()
+        denied_response.__enter__.return_value.read.return_value = denied_payload
+        success_response = MagicMock()
+        success_response.__enter__.return_value.read.return_value = success_payload
+
+        with patch(
+            "jeju_grid_live.urlopen",
+            side_effect=[denied_response, success_response],
+        ) as mocked_urlopen:
+            frame = fetch_jeju_grid_live("abc%2Bdef%3D")
+
+        self.assertEqual(len(frame), 1)
+        self.assertEqual(mocked_urlopen.call_count, 2)
+        self.assertEqual(frame.attrs["api_source"], "구형 KPX XML")
 
     def test_explicit_date_does_not_trigger_live_fallback(self):
         empty_payload = json.dumps(
