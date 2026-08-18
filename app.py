@@ -35,6 +35,7 @@ from realtime_adjustment import (  # noqa: E402
     adjust_forecast_with_live_renewables,
     adjust_forecast_with_observations,
 )
+from time_utils import get_effective_start_hour  # noqa: E402
 
 
 FORECAST_PATH = ROOT / "outputs" / "demo_predictions.csv"
@@ -224,10 +225,18 @@ bonus_point_rate = point_policy["maximum_bonus_rate"]
 partial_reward_threshold = 50
 full_reward_threshold = 70
 
-# 실시간 보정 재현에서는 현재 시각 이전을 다시 추천하지 않는다.
-planning_start_hour = start_hour
+# 오늘 모드에서는 이미 지난 시간대를 추천하지 않는다.
+planning_start_hour = int(start_hour)
+if mode == "오늘 공식 실시간 관측":
+    planning_start_hour = get_effective_start_hour(
+        selected_start_hour=planning_start_hour,
+        now=pd.Timestamp.now(tz="Asia/Seoul").to_pydatetime(),
+        is_today=True,
+    )
+
+# 실측값이 있는 모드에서는 마지막 관측 시각 이전을 다시 추천하지 않는다.
 if has_observed:
-    planning_start_hour = max(start_hour, observation_hour + 1)
+    planning_start_hour = max(planning_start_hour, observation_hour + 1)
     if planning_start_hour != start_hour:
         st.info(
             f"실측값이 {observation_hour:02d}:00까지 도착했으므로 "

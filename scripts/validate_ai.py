@@ -17,6 +17,11 @@ METRICS_PATH = ROOT / "outputs" / "model_metrics.json"
 HISTORY_PATH = ROOT / "data" / "processed" / "train.csv"
 
 
+def validate_green_score(green_score: float) -> bool:
+    """재생에너지/수요 비율의 백분위 점수가 Green Time 기준을 충족하는지 확인한다."""
+    return green_score >= 70.0
+
+
 def validate() -> None:
     if not PREDICTION_PATH.exists() or not METRICS_PATH.exists():
         raise FileNotFoundError("python scripts/train_models.py를 먼저 실행하세요.")
@@ -56,6 +61,8 @@ def validate() -> None:
             raise ValueError(f"{target} 내일 예보용 모델 평가 결과가 없습니다.")
     if "예측 재생에너지/예측 수요" not in metrics.get("score_definition", ""):
         raise ValueError("Green Score는 재생에너지/전력수요 공급여력 기준이어야 합니다.")
+    if not forecast["green_score"].apply(validate_green_score).any():
+        raise ValueError("수요 대비 재생에너지 기준 Green Score 70점 이상인 시간이 없습니다.")
 
     point_policy = derive_point_policy(3_000_000, 100_000)
     if point_policy["maximum_total_rate"] != 30:
