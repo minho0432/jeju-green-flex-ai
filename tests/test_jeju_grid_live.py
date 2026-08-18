@@ -217,7 +217,7 @@ class JejuGridLiveTests(unittest.TestCase):
         self.assertEqual(mocked_urlopen.call_count, 2)
         first_url = mocked_urlopen.call_args_list[0].args[0].full_url
         second_url = mocked_urlopen.call_args_list[1].args[0].full_url
-        self.assertNotIn("baseDate=", first_url)
+        self.assertIn("baseDate=", first_url)
         self.assertIn("apis.data.go.kr", first_url)
         self.assertIn("openapi.kpx.or.kr", second_url)
         self.assertEqual(frame.attrs["api_source"], "구형 KPX XML")
