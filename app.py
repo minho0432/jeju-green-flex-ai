@@ -177,6 +177,39 @@ def load_history():
     return pd.read_csv(HISTORY_PATH, parse_dates=["timestamp"])
 
 
+def build_recommendation_reason(
+    best_slot: pd.Series,
+    score_difference: float,
+    has_observed: bool,
+) -> str:
+    renewable = float(best_slot["predicted_renewable_mwh"])
+    demand = float(best_slot["predicted_demand_mwh"])
+    supply_ratio = renewable / max(demand, 50.0) * 100
+    risk_points = float(best_slot.get("forecast_risk_points", 0.0))
+    wind = float(best_slot.get("wind_speed_10m", 0.0))
+    radiation = float(best_slot.get("shortwave_radiation", 0.0))
+    reason = (
+        f"{best_slot['timestamp']:%H시}를 추천한 이유는 보수적 기회점수가 사용 가능시간 평균보다 "
+        f"{score_difference:+.1f}점 높기 때문입니다. 당시 재생에너지는 약 {renewable:.1f}MWh, "
+        f"제주 전력수요는 약 {demand:.1f}MWh로, 예측 공급여력은 {supply_ratio:.1f}% 수준입니다."
+    )
+    if wind <= 3:
+        reason += " 바람 예보가 약해 풍력 기여도는 보수적으로 반영했습니다."
+    elif wind >= 7:
+        reason += " 바람 예보가 비교적 강해 풍력 발전 기회가 뒷받침됩니다."
+    if radiation < 100:
+        reason += " 일사량이 낮은 시간대라 태양광 기여는 제한적으로 보았습니다."
+    elif radiation >= 400:
+        reason += " 일사량 예보가 충분해 태양광 발전 조건도 유리합니다."
+    if risk_points >= 15:
+        reason += " 다만 예측 범위가 넓어 예보 오차를 고려해 보수적인 점수를 적용했습니다."
+    elif has_observed:
+        reason += " 현재까지 도착한 실측값을 반영해 이후 시간대의 예측을 보정했습니다."
+    else:
+        reason += " 실제 기상과 발전량이 달라질 수 있으므로 출발 전 최신 관측을 다시 확인하는 것이 좋습니다."
+    return reason
+
+
 def get_data_go_kr_service_key() -> str:
     """로컬 환경변수 또는 Streamlit 비밀설정에서 키를 읽는다."""
     key = os.environ.get("DATA_GO_KR_SERVICE_KEY", "").strip()
@@ -519,10 +552,8 @@ if not used.empty:
             & (forecast["timestamp"].dt.hour < departure_hour)
         ]
         score_difference = best_slot[score_to_show] - candidates[score_to_show].mean()
-        reason_text = (
-            f"추천 이유: {best_slot['timestamp']:%H시}의 보수적 기회점수가 사용 가능시간 평균보다 "
-            f"{score_difference:+.1f}점 높습니다. 재생에너지는 {best_slot['predicted_renewable_mwh']:.1f}MWh, "
-            f"제주 전력수요는 {best_slot['predicted_demand_mwh']:.1f}MWh로 예상됩니다."
+        reason_text = build_recommendation_reason(
+            best_slot, score_difference, has_observed
         )
     st.success(reason_text)
 
