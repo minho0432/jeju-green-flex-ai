@@ -570,26 +570,91 @@ if has_actual:
         st.plotly_chart(demand_fig, width="stretch")
 elif has_observed:
     st.subheader("실측 도착 전후 예측 보정")
-    with st.container():
+
+    renewable_tab, demand_tab = st.tabs(
+        ["재생에너지 보정", "전력수요 보정"]
+    )
+
+    with renewable_tab:
         renewable_fig = go.Figure()
+
         renewable_fig.add_scatter(
-            x=forecast["timestamp"], y=forecast["raw_predicted_renewable_mwh"],
-            name="보정 전 예측", line={"color": "#aab4bd", "width": 2, "dash": "dot"},
+            x=forecast["timestamp"],
+            y=forecast["raw_predicted_renewable_mwh"],
+            name="보정 전 예측",
+            line={"width": 2, "dash": "dot"},
         )
+
         renewable_fig.add_scatter(
-            x=forecast["timestamp"], y=forecast["predicted_renewable_mwh"],
-            name="실측 반영 후 예측", line={"color": "#20a464", "width": 3},
+            x=forecast["timestamp"],
+            y=forecast["predicted_renewable_mwh"],
+            name="실측 반영 후 예측",
+            line={"width": 3},
         )
+
         renewable_fig.add_scatter(
-            x=forecast["timestamp"], y=forecast["observed_actual_renewable_mwh"],
-            name="현재까지 도착한 실측", mode="lines+markers",
-            line={"color": "#243447", "width": 2},
+            x=forecast["timestamp"],
+            y=forecast["observed_actual_renewable_mwh"],
+            name="현재까지 도착한 실측",
+            mode="lines+markers",
+            line={"width": 2},
         )
         renewable_fig.update_layout(height=350, yaxis_title="MWh", margin={"t": 20, "b": 30})
         st.plotly_chart(renewable_fig, width="stretch")
+
+        renewable_fig.update_layout(
+            height=350,
+            yaxis_title="MWh",
+            margin={"t": 20, "b": 30},
+        )
+
+        st.plotly_chart(
+            renewable_fig,
+            use_container_width=True,
+        )
+
+    with demand_tab:
+        demand_fig = go.Figure()
+
+        demand_fig.add_scatter(
+            x=forecast["timestamp"],
+            y=forecast["raw_predicted_demand_mwh"],
+            name="보정 전 수요 예측",
+            line={"width": 2, "dash": "dot"},
+        )
+
+        demand_fig.add_scatter(
+            x=forecast["timestamp"],
+            y=forecast["predicted_demand_mwh"],
+            name="실측 반영 후 수요 예측",
+            line={"width": 3},
+        )
+
+        if "observed_actual_demand_mwh" in forecast.columns:
+            demand_fig.add_scatter(
+                x=forecast["timestamp"],
+                y=forecast["observed_actual_demand_mwh"],
+                name="현재까지 도착한 수요 실측",
+                mode="lines+markers",
+                line={"width": 2},
+            )
+
+        demand_fig.update_layout(
+            height=350,
+            yaxis_title="MWh",
+            margin={"t": 20, "b": 30},
+        )
+
+        st.plotly_chart(
+            demand_fig,
+            use_container_width=True,
+        )
+
     st.caption(
-        "완료된 최근 3시간의 실제-예측 오차를 사용합니다. 다음 한 시간은 크게 고치고, "
-        "먼 시간일수록 보정 영향이 줄어듭니다. 미래 실제값은 계산에 사용하지 않습니다."
+        "완료된 최근 3시간의 실제-예측 오차를 사용합니다. "
+        "다음 한 시간은 크게 보정하고, 먼 시간일수록 보정 영향이 줄어듭니다. "
+        "재생에너지와 전력수요를 모두 보정한 뒤 Green Score와 충전계획을 다시 계산합니다. "
+        "미래 실제값은 계산에 사용하지 않습니다."
     )
 else:
     weather_day_label = "오늘" if mode == "오늘 공식 실시간 관측" else "내일"

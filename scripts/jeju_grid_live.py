@@ -359,17 +359,48 @@ def fetch_jeju_grid_live(
 
 
 def grid_samples_to_hourly(samples: pd.DataFrame) -> pd.DataFrame:
-    """5분 실측을 모델과 같은 시간별 태양광+풍력 MWh로 바꾼다."""
+    """5분 실측을 모델과 같은 시간별 재생에너지·전력수요 MWh로 바꾼다."""
     required = {"timestamp", *NUMERIC_COLUMNS}
     missing = required - set(samples.columns)
     if missing:
         raise ValueError(f"시간 변환에 필요한 열이 없습니다: {sorted(missing)}")
 
+    # 태양광 + 풍력 실측을 시간별 MWh로 변환
     energy = five_minute_mw_to_hourly_mwh(
         samples,
         power_columns=("solar_mw", "wind_mw"),
     ).rename(columns={"renewable_mwh": "actual_renewable_mwh"})
+
+    # 송전단 수요 실측을 시간별 MWh로 변환
+    demand_energy = five_minute_mw_to_hourly_mwh(
+        samples,
+        power_columns=("demand_transmission_mw",),
+    )[["timestamp", "demand_transmission_mwh"]].rename(
+        columns={"demand_transmission_mwh": "actual_demand_mwh"}
+    )
+
+    energy = energy.merge(
+        demand_energy,
+        on="timestamp",
+        how="left",
+    )
+
+    # 화면/상태 표시용 시간별 평균값 유지
     context = samples.copy()
+    context["timestamp"] = pd.to_datetime(context["timestamp"]).dt.floor("h")
+    context = (
+        context.groupby("timestamp", as_index=False)[
+            [
+                "supply_capacity_mw",
+                "demand_generation_mw",
+                "renewable_total_mw",
+                "demand_transmission_mw",
+            ]
+        ]
+        .mean()
+    )
+
+    return energy.merge(context, on="timestamp", how="left")
     context["timestamp"] = pd.to_datetime(context["timestamp"]).dt.floor("h")
     context = (
         context.groupby("timestamp", as_index=False)[
