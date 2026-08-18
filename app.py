@@ -241,7 +241,7 @@ elif mode == "오늘 공식 실시간 관측":
                 live_models, live_history, today_weather
             )
 
-            st.write("3/4 KPX 신규 GW → 구형 XML 순서로 5분 관측 확인")
+            st.write("3/4 KPX 신규 GW → 구형 XML 순서로 5분 단위 실측 조회")
             live_samples, live_error_type, live_error_message = load_official_grid(
                 service_key
             )
@@ -344,12 +344,12 @@ with st.sidebar:
         "배터리 전체 용량(kWh)",
         20.0,
         120.0,
-        float(st.session_state.profile_battery_kwh),
+        float(st.session_state.get("profile_battery_kwh", 60.0)),
         1.0,
     )
 
     charger_options = [3.0, 7.0, 11.0, 50.0]
-    profile_charger = float(st.session_state.profile_charger_kw)
+    profile_charger = float(st.session_state.get("profile_charger_kw", 7.0))
 
     charger_kw = st.selectbox(
         "충전기 출력(kW)",
