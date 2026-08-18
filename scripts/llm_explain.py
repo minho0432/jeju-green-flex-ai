@@ -13,7 +13,7 @@ import requests
 DEFAULT_ENDPOINT = "https://api.openai.com/v1/chat/completions"
 DEFAULT_MODEL = "gpt-4o-mini"
 DEFAULT_OLLAMA_ENDPOINT = "http://localhost:11434/api/chat"
-DEFAULT_OLLAMA_MODEL = "qwen2.5:3b"
+DEFAULT_OLLAMA_MODEL = "qwen2.5:0.5b"
 
 
 class LlmExplanationError(RuntimeError):

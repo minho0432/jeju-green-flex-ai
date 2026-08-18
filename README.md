@@ -52,7 +52,7 @@ Streamlit Cloud의 `Settings → Secrets` 또는 로컬 환경변수에 다음�
 
 ```toml
 LLM_PROVIDER = "ollama"
-OLLAMA_MODEL = "qwen2.5:3b"
+OLLAMA_MODEL = "qwen2.5:0.5b"
 OLLAMA_BASE_URL = "http://localhost:11434/api/chat"
 # OpenAI 호환 provider를 사용할 때만 아래 설정을 사용합니다.
 # OPENAI_API_KEY = "발급받은_API_키"
