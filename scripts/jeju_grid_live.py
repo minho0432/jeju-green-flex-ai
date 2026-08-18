@@ -25,10 +25,16 @@ import pandas as pd
 from realtime_adjustment import five_minute_mw_to_hourly_mwh
 
 
-API_URL = (
+GW_API_URL = (
     "https://apis.data.go.kr/B552115/JejuSukub5mToday/"
     "getJejuSukub5mToday"
 )
+LEGACY_API_URL = (
+    "https://openapi.kpx.or.kr/openapi/chejusukub5mToday/"
+    "getChejuSukub5mToday"
+)
+# 기존 코드와 테스트에서 참조할 수 있도록 신규 GW 주소를 기본 API로 유지한다.
+API_URL = GW_API_URL
 KOREA_TIMEZONE = ZoneInfo("Asia/Seoul")
 
 API_TO_CANONICAL = {
@@ -126,6 +132,31 @@ def build_request_url(
         query_parameters["baseDate"] = base_date
     query = urlencode(query_parameters)
     return f"{API_URL}?{query}"
+
+
+def build_legacy_request_url(
+    service_key: str,
+    page_no: int = 1,
+    num_of_rows: int = 300,
+) -> str:
+    """GW 전환 전 KPX XML API의 오늘 자료 요청 URL을 만든다.
+
+    구형 API도 공공데이터포털 일반인증키를 사용하며 날짜 파라미터 없이
+    오늘 5분 자료만 제공한다. 인코딩키·디코딩키 어느 쪽도 안전하게 받는다.
+    """
+    key = unquote(service_key.strip())
+    if not key:
+        raise ValueError("공공데이터포털 인증키가 비어 있습니다.")
+    if page_no < 1 or num_of_rows < 1:
+        raise ValueError("페이지와 행 수는 1 이상이어야 합니다.")
+    query = urlencode(
+        {
+            "serviceKey": key,
+            "pageNo": page_no,
+            "numOfRows": num_of_rows,
+        }
+    )
+    return f"{LEGACY_API_URL}?{query}"
 
 
 def _xml_to_mapping(payload: str) -> dict[str, Any]:
@@ -238,20 +269,23 @@ def fetch_jeju_grid_live(
 ) -> pd.DataFrame:
     """오늘의 제주 5분 관측값을 호출하고 실패 원인을 구분한다.
 
-    `Today` 기능은 기준일이 선택 항목인데 GW 전환 뒤 제공기관별 동작이 다를
-    수 있다. 일반 실시간 호출은 기준일을 생략해 먼저 요청하고, 정상 응답이
-    0건일 때만 오늘 날짜를 명시해 한 번 더 확인한다. 사용자가 과거 날짜를
-    명시한 진단 호출은 그 날짜만 한 번 요청한다.
+    일반 실시간 호출은 신규 GW의 기준일 없는 요청을 먼저 사용한다. GW가
+    0건이거나 일시적으로 실패하면, 같은 태양광·풍력 필드를 제공하는 KPX의
+    구형 공식 XML 주소를 한 번만 대체 호출한다. 이 방식은 호출당 최대 2회라
+    앱의 30분 오류 캐시와 함께 개발계정 일 100회 한도를 넘지 않는다.
+
+    사용자가 과거 날짜를 명시한 진단 호출은 과거 조회가 불가능한 구형
+    `Today` 주소로 대체하지 않고 신규 GW에 그 날짜만 한 번 요청한다.
     """
     if timeout_seconds <= 0:
         raise ValueError("API 제한시간은 0보다 커야 합니다.")
     if base_date is None:
-        request_urls = [
-            build_request_url(service_key, include_base_date=False),
-            build_request_url(service_key, include_base_date=True),
+        requests = [
+            ("신규 GW", build_request_url(service_key, include_base_date=False)),
+            ("구형 KPX XML", build_legacy_request_url(service_key)),
         ]
     else:
-        request_urls = [build_request_url(service_key, base_date=base_date)]
+        requests = [("신규 GW", build_request_url(service_key, base_date=base_date))]
 
     def request_frame(request_url: str) -> pd.DataFrame:
         request = Request(
@@ -296,21 +330,32 @@ def fetch_jeju_grid_live(
             ) from error
         return parse_api_response(payload)
 
-    last_no_data_error: JejuGridNoDataError | None = None
-    for request_url in request_urls:
+    failures: list[tuple[str, JejuGridApiError]] = []
+    for source_name, request_url in requests:
         try:
-            return request_frame(request_url)
-        except JejuGridNoDataError as error:
-            last_no_data_error = error
+            frame = request_frame(request_url)
+            frame.attrs["api_source"] = source_name
+            return frame
+        except JejuGridApiError as error:
+            failures.append((source_name, error))
 
-    if len(request_urls) > 1:
+    if len(requests) > 1 and all(
+        isinstance(error, JejuGridNoDataError) for _, error in failures
+    ):
         raise JejuGridNoDataError(
-            "KPX API 연결과 인증은 성공했지만 기준일 생략·오늘 날짜 명시 "
-            "요청이 모두 0건입니다. 공공데이터 GW의 오늘 자료 연계 상태를 "
-            "제공기관에 확인하세요."
-        ) from last_no_data_error
-    assert last_no_data_error is not None
-    raise last_no_data_error
+            "신규 GW와 구형 KPX XML API의 오늘 관측값이 모두 0건입니다. "
+            "제공기관의 오늘 자료 등록 상태를 확인하세요."
+        ) from failures[-1][1]
+    if len(requests) > 1:
+        failure_summary = " / ".join(
+            f"{source}: {error}" for source, error in failures
+        )
+        raise JejuGridApiError(
+            "신규 GW와 구형 KPX XML 대체 경로가 모두 실패했습니다. "
+            "구형 API도 별도 활용신청 대상인지 확인하세요. "
+            f"[{failure_summary}]"
+        ) from failures[-1][1]
+    raise failures[-1][1]
 
 
 def grid_samples_to_hourly(samples: pd.DataFrame) -> pd.DataFrame:
