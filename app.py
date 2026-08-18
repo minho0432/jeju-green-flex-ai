@@ -20,7 +20,12 @@ from live_forecast import (  # noqa: E402
     fetch_open_meteo_forecast,
     train_forecast_only_models,
 )
-from llm_explain import LlmExplanationError, explain_recommendation  # noqa: E402
+from llm_explain import explain_recommendation  # noqa: E402
+try:
+    from llm_explain import LlmExplanationError  # noqa: E402
+except ImportError:
+    class LlmExplanationError(RuntimeError):
+        pass
 from jeju_grid_live import (  # noqa: E402
     JejuGridApiError,
     JejuGridNoDataError,
