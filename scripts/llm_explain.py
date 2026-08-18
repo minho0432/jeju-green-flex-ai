@@ -159,7 +159,16 @@ def explain_recommendation(
             raise ValueError("LLM 응답 내용이 비어 있습니다.")
         return content.strip()
     except (requests.RequestException, KeyError, IndexError, TypeError, ValueError) as error:
+        if provider == "ollama":
+            message = (
+                "로컬 LLM에 연결하지 못했습니다. Ollama가 실행 중인지 확인하고 "
+                "`ollama pull qwen2.5:3b`와 `ollama serve`를 실행하세요."
+            )
+        else:
+            message = (
+                "LLM 설명을 생성하지 못했습니다. API 키, 모델명, 엔드포인트와 "
+                "OpenAI 결제·사용량 설정을 확인하세요."
+            )
         raise LlmExplanationError(
-            "LLM 설명을 생성하지 못했습니다. API 키, 모델명, 엔드포인트와 "
-            "OpenAI 결제·사용량 설정을 확인하세요."
+            message
         ) from error
