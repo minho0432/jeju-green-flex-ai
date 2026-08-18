@@ -160,10 +160,11 @@ def load_today_weather():
     return fetch_open_meteo_forecast(target_day_offset=0)
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=3600, show_spinner=False)
 def load_official_grid(service_key: str):
-    # 성공뿐 아니라 0건·공식 API 오류도 30분간 캐시한다. Streamlit이 다시
-    # 실행될 때 실패 요청을 반복해 개발계정 일 100회 한도를 소진하지 않는다.
+    # 성공뿐 아니라 0건·공식 API 오류도 60분간 캐시한다. 신규 GW와 구형
+    # 대체 API를 모두 호출해도 최대 48회/일이라 개발계정 일 100회 한도를
+    # 미리보기·재부팅 여유 없이 소진하지 않는다.
     try:
         return fetch_jeju_grid_live(service_key), None, None
     except JejuGridNoDataError as error:
