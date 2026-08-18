@@ -52,6 +52,13 @@ def train_forecast_only_models() -> tuple[dict[str, object], pd.DataFrame]:
             target: joblib.load(path)
             for target, path in model_paths.items()
         }
+    except ModuleNotFoundError as error:
+        missing_module = error.name or "알 수 없는 모듈"
+        raise RuntimeError(
+            "저장된 AI 모델이 요구하는 모듈을 찾지 못했습니다: "
+            f"{missing_module}. requirements.txt 설치와 "
+            "scikit-learn·LightGBM·joblib 버전을 확인하세요."
+        ) from error
     except Exception as error:
         raise RuntimeError(
             "저장된 AI 모델을 불러오지 못했습니다 "
